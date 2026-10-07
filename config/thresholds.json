@@ -69,5 +69,8 @@
     "face_long_side": 800,
     "face_min_score": 0.7,
     "face_min_margin": 0.6
+  },
+  "restore": {
+    "min_free_disk_gb": 3
   }
 }

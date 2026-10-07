@@ -12,7 +12,8 @@ def main() -> int:
     sub.add_parser("verify", help="re-hash the source folder and confirm nothing changed")
     sub.add_parser("browse", help="build the capture-order thumbnail index")
     sub.add_parser("pilot-select", help="choose the pilot set and draw its contact sheet")
-    sub.add_parser("pilot-run", help="detect, orient and restore the pilot files and build the review page")
+    sub.add_parser("pilot-run", help="restore the pilot files only")
+    sub.add_parser("restore", help="detect, orient and enhance every photograph (resumable)")
     sub.add_parser("review", help="serve the interactive review page on 127.0.0.1:8765")
     args = parser.parse_args()
 
@@ -33,7 +34,10 @@ def main() -> int:
         pilot.run()
     elif args.stage == "pilot-run":
         from . import process
-        process.run()
+        process.run("pilot")
+    elif args.stage == "restore":
+        from . import process
+        process.run("all")
     elif args.stage == "review":
         from . import review
         review.run()

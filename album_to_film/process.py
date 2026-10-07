@@ -1,9 +1,12 @@
-"""Pilot run: detect, orient and restore the pilot files only, and record everything for review.
+"""Restore stage: detect, orient and enhance each photograph, and record everything for review.
+
+Runs on the pilot set or on every original capture.
 
 Manual decisions in review/overrides.json (corners, rotation, enhancement level) always win over
 the automatic result and are never overwritten by the pipeline.
 """
 import json
+import shutil
 import time
 
 import cv2
@@ -12,7 +15,7 @@ import numpy as np
 from . import catalog, detect, orient, paths, restore
 from .analyze import load_reduced
 
-STAGE_VERSION = 6
+STAGE_VERSION = 7
 PREVIEW_LONG_SIDE = 1100
 CAPTURE_LONG_SIDE = 2656     # sharp enough for the magnifier when setting corners by hand
 LEVEL_COLOURS = {"high": (90, 200, 90), "medium": (60, 200, 235), "low": (70, 70, 230), "manual": (235, 160, 60)}
@@ -116,7 +119,7 @@ def process_file(row: dict, variant: dict | None, cfg: dict, ecfg: dict, overrid
     pid = row["id"]
     processed = paths.PROCESSED_DIR / f"{pid}.jpg"
     save_jpg(processed, rot(versions[chosen]), 95)
-    previews = paths.PREVIEWS_DIR / "pilot"
+    previews = paths.PREVIEWS_DIR / "photos"
     save_jpg(previews / f"{pid}_capture.jpg", full, 85, CAPTURE_LONG_SIDE)
     save_jpg(previews / f"{pid}_overlay.jpg", overlay, 85)
     save_jpg(previews / f"{pid}_geom.jpg", rot(geom_raw), 88, PREVIEW_LONG_SIDE)
@@ -138,8 +141,8 @@ def process_file(row: dict, variant: dict | None, cfg: dict, ecfg: dict, overrid
     }
 
 
-def write_editorial(results: list[dict], metrics: dict, events: dict) -> None:
-    """First version of the shared per-photo editorial records (pilot files only)."""
+def write_editorial(results: list[dict], metrics: dict, events: dict, filename: str) -> None:
+    """The shared per-photo editorial records that both films will select from."""
     records = []
     for r in results:
         category = category_for(r["capture_order"], events)
@@ -157,7 +160,7 @@ def write_editorial(results: list[dict], metrics: dict, events: dict) -> None:
             "motion_style": None, "transition_in": None, "transition_out": None, "crop_mode": None,
             "flags": r["flags"], "notes": o.get("note", ""), "manual_override": o,
         })
-    catalog.write_text_atomic(paths.EDITORIAL_DIR / "photos.pilot.json", json.dumps(records, indent=2, ensure_ascii=False))
+    catalog.write_text_atomic(paths.EDITORIAL_DIR / filename, json.dumps(records, indent=2, ensure_ascii=False))
 
 
 def process_one(con, photo_id: str, cfg: dict, ecfg: dict, overrides: dict, events: dict, quiet: bool = False) -> dict:
@@ -170,8 +173,8 @@ def process_one(con, photo_id: str, cfg: dict, ecfg: dict, overrides: dict, even
     override = overrides.get(photo_id, {})
     geometry = {k: override[k] for k in ("quad", "rotation_cw_deg", "level") if k in override}
     fp = catalog.fingerprint(row["sha256"], STAGE_VERSION, cfg["detect"], cfg["crop"], cfg["orient"], ecfg, variant, geometry)
-    cached = con.execute("SELECT data FROM pilot_results WHERE photo_id=?", (photo_id,)).fetchone()
-    if cached and catalog.is_done(con, photo_id, "pilot", fp):
+    cached = con.execute("SELECT data FROM restore_results WHERE photo_id=?", (photo_id,)).fetchone()
+    if cached and catalog.is_done(con, photo_id, "restore", fp):
         result = json.loads(cached["data"])
         result["override"] = override
         return result
@@ -179,8 +182,8 @@ def process_one(con, photo_id: str, cfg: dict, ecfg: dict, overrides: dict, even
     result = process_file(row, variant, cfg, ecfg, override)
     result["seconds"] = round(time.time() - t0, 1)
     result["category"] = category_for(row["capture_order"], events)
-    con.execute("INSERT OR REPLACE INTO pilot_results VALUES (?,?)", (photo_id, json.dumps(result)))
-    catalog.mark(con, photo_id, "pilot", fp)
+    con.execute("INSERT OR REPLACE INTO restore_results VALUES (?,?)", (photo_id, json.dumps(result)))
+    catalog.mark(con, photo_id, "restore", fp)
     con.commit()
     if not quiet:
         d, o = result["detect"], result["orientation"]
@@ -189,19 +192,66 @@ def process_one(con, photo_id: str, cfg: dict, ecfg: dict, overrides: dict, even
     return result
 
 
-def run(quiet: bool = False) -> list[dict]:
+REVIEW_FLAGS = {"no_print_found", "crop_not_applied_low_confidence", "uncertain_orientation",
+                "faces_disagree_with_your_edit", "multiple_regions", "enhancement_may_hurt", "no_paper_visible"}
+
+
+def needs_review(result: dict) -> bool:
+    """True while the automatic result is doubtful and you have not settled it."""
+    o = result.get("override", {})
+    if o.get("exclude") or o.get("reviewed"):
+        return False
+    return (result["detect"]["level"] in ("low", "medium") or result["orientation"]["confidence"] == "low"
+            or bool(REVIEW_FLAGS & set(result["flags"])))
+
+
+def selection_ids(con, scope: str) -> list[str]:
+    if scope == "pilot":
+        return [i["id"] for i in json.loads((paths.REPORTS_DIR / "pilot_selection.json").read_text(encoding="utf-8"))]
+    return [r["id"] for r in con.execute("SELECT id FROM photos WHERE role='original' ORDER BY capture_order")]
+
+
+def run(scope: str = "all", quiet: bool = False) -> list[dict]:
+    """Process every photo in scope ('pilot' or 'all'); unchanged photos are served from the cache."""
     cfg, ecfg = catalog.load_config("thresholds.json"), catalog.load_config("enhancement.json")
-    selection = json.loads((paths.REPORTS_DIR / "pilot_selection.json").read_text(encoding="utf-8"))
     events, overrides = load_event_ranges(), load_overrides()
     con = catalog.connect()
-    con.execute("CREATE TABLE IF NOT EXISTS pilot_results (photo_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
-    results = [process_one(con, item["id"], cfg, ecfg, overrides, events, quiet) for item in selection]
+    con.execute("CREATE TABLE IF NOT EXISTS restore_results (photo_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+    ids = selection_ids(con, scope)
+    free_gb = shutil.disk_usage(paths.ROOT).free / 1e9
+    if free_gb < cfg["restore"]["min_free_disk_gb"]:
+        raise SystemExit(f"Only {free_gb:.1f} GB free; refusing to start (minimum {cfg['restore']['min_free_disk_gb']} GB).")
+
+    results, errors, started = [], [], time.time()
+    for n, photo_id in enumerate(ids, 1):
+        try:
+            result = process_one(con, photo_id, cfg, ecfg, overrides, events, quiet=True)
+        except Exception as e:      # keep the batch going; the failure is listed at the end
+            errors.append((photo_id, repr(e)))
+            continue
+        result["category"] = category_for(result["capture_order"], events)
+        result["needs_review"] = needs_review(result)
+        results.append(result)
+        if not quiet and n % 25 == 0:
+            print(f"  restore {n}/{len(ids)}  ({time.time() - started:.0f}s)")
     metrics = {r["photo_id"]: json.loads(r["data"]) for r in con.execute("SELECT * FROM metrics")}
     con.close()
-    catalog.write_text_atomic(paths.REPORTS_DIR / "pilot_results.json", json.dumps(results, indent=2, ensure_ascii=False))
-    write_editorial(results, metrics, events)
-    from . import gallery
-    gallery.build(results)
+
+    suffix = "" if scope == "all" else ".pilot"
+    catalog.write_text_atomic(paths.REPORTS_DIR / f"restore_results{suffix}.json", json.dumps(results, indent=2, ensure_ascii=False))
+    write_editorial(results, metrics, events, f"photos{suffix}.json")
     if not quiet:
-        print(f"pilot-run: {len(results)} files -> review/pilot/index.html")
+        count = lambda key: dict(sorted(__import__("collections").Counter(key(r) for r in results).items()))
+        flags: dict[str, int] = {}
+        for r in results:
+            for f in r["flags"]:
+                flags[f] = flags.get(f, 0) + 1
+        print(f"restore ({scope}): {len(results)} photos, {len(errors)} errors, {time.time() - started:.0f}s")
+        print("  crop:", count(lambda r: r["detect"]["level"]))
+        print("  orientation from:", count(lambda r: r["orientation"]["source"]))
+        print("  chapters:", count(lambda r: r["category"]))
+        print("  flags:", dict(sorted(flags.items(), key=lambda kv: -kv[1])))
+        print("  need review:", sum(r["needs_review"] for r in results))
+        for photo_id, err in errors:
+            print(f"  ERROR {photo_id}: {err}")
     return results

@@ -60,9 +60,9 @@ reports, review decisions, music and video cannot be committed by accident, what
 | `browse` | Thumbnail index in capture order, used to label chapters as a few ranges of numbers | done |
 | `pilot-select` | Picks a small representative pilot set from the measurements | done |
 | `pilot-run` | Finds the print, corrects perspective, orients, enhances; pilot set only | done |
-| `review` | Local review page: click four corners, rotate, choose enhancement, exclude, note; with undo | done |
-| full-album run | The same restoration for every photograph | next |
-| duplicates | Groups repeated captures of the same print (flag only, nothing deleted) | planned |
+| `restore` | The same restoration for every photograph, resumable | done |
+| `review` | Local review page with a "needs review" queue: click four corners with a magnifier, rotate, choose enhancement, exclude, note; with undo | done |
+| duplicates | Groups repeated captures of the same print (flag only, nothing deleted) | next |
 | editorial | Scores and separate selections for the trailer and the full movie | planned |
 | timeline | Shot durations with min/max/weight, refined (not dictated) by the music's beats | planned |
 | render | Ken Burns motion and transitions, drawn frame by frame and encoded with FFmpeg | planned |
@@ -79,8 +79,9 @@ pull the crop inward. Every result carries a confidence built from edge evidence
 - **medium**: cropped and queued for review
 - **low**: left uncropped until corners are set by hand
 
-The crop keeps the whole print with a hairline outward margin. It trims inward only where a strip just
-inside the detected edge is almost entirely paper.
+No paper is left around the print: each side is trimmed while a thin strip inside the detected edge is
+mostly paper, then a small fixed inset removes the soft transition at the edge. Corners set by hand are
+used exactly as clicked.
 
 ### Which way is up
 
@@ -118,6 +119,7 @@ Edit `config/project.json` so that `source_dir` points to the folder with your c
 .venv/bin/python -m album_to_film browse        # previews/browse/index.html, thumbnails in capture order
 .venv/bin/python -m album_to_film pilot-select  # choose the pilot set
 .venv/bin/python -m album_to_film pilot-run     # restore the pilot set
+.venv/bin/python -m album_to_film restore       # restore every photograph
 .venv/bin/python -m album_to_film review        # review page on http://127.0.0.1:8765
 .venv/bin/python -m album_to_film verify        # confirm the source folder is unchanged
 ```

@@ -1,7 +1,8 @@
 """Interactive review page, served on this machine only (127.0.0.1).
 
-Lets you click the four corners of a print, rotate, choose the enhancement level, exclude a photo and
-leave a note. Decisions are saved to review/overrides.json and the photo is reprocessed at once.
+Lets you click the four corners of a print, rotate, choose the enhancement level, mark a photo as
+checked, exclude it and leave a note. Decisions are saved to review/overrides.json and the photo is
+reprocessed at once.
 """
 import json
 import threading
@@ -10,25 +11,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import paths, process
 
 PORT = 8765
-ALLOWED_KEYS = {"quad", "rotation_cw_deg", "level", "exclude", "note"}
+ALLOWED_KEYS = {"quad", "rotation_cw_deg", "level", "exclude", "note", "reviewed"}
 _lock = threading.Lock()
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pilot review</title>
+<title>Photo review</title>
 <style>
   :root { --bg:#1c1b1a; --card:#272523; --ink:#ece7df; --dim:#a39c90; --accent:#d8b98a; --line:#3a3734;
           --high:#5ac85a; --medium:#ebc83c; --low:#e65046; --manual:#3ca0eb; }
   * { box-sizing:border-box; }
   body { margin:0; padding:16px; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system, sans-serif; }
   h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:0 0 10px; }
-  p.lead { color:var(--dim); max-width:85ch; margin:0 0 20px; }
-  section { background:var(--card); border-radius:8px; padding:14px; margin:0 0 18px; }
-  section { position:relative; }
+  p.lead { color:var(--dim); max-width:85ch; margin:0 0 12px; }
+  section { position:relative; background:var(--card); border-radius:8px; padding:14px; margin:0 0 18px; }
   section.busy { pointer-events:none; }
   section.busy > :not(.loading) { opacity:.35; }
-  .loading { display:none; position:absolute; inset:0; z-index:2; align-items:center; justify-content:center; gap:10px;
-             font-weight:600; }
+  .loading { display:none; position:absolute; inset:0; z-index:2; align-items:center; justify-content:center; font-weight:600; }
   section.busy .loading { display:flex; }
   .loading span.box { background:#111c; padding:10px 16px; border-radius:8px; display:flex; align-items:center; gap:10px; }
   .spin { width:18px; height:18px; border:3px solid #fff4; border-top-color:var(--accent); border-radius:50%;
@@ -38,15 +37,15 @@ PAGE = r"""<!doctype html>
   .top { position:sticky; top:0; z-index:5; display:flex; flex-wrap:wrap; gap:8px; align-items:center;
          background:var(--bg); padding:10px 0; margin-bottom:14px; border-bottom:1px solid var(--line); }
   .top button:disabled { opacity:.4; cursor:default; }
+  #count { color:var(--dim); }
   #status { margin-left:auto; display:flex; align-items:center; gap:8px; font-weight:600; }
   #status.saved { color:var(--high); } #status.error { color:var(--low); } #status.saving { color:var(--accent); }
-  .yours { color:var(--manual); } .savedat { color:var(--high); }
   .shots { display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:10px; align-items:start; }
   figure { margin:0; } figcaption { color:var(--dim); padding-top:4px; font-size:12px; }
   figure img { display:block; width:100%; height:auto; max-height:70vh; object-fit:contain; background:#111; border-radius:4px; }
   figure.chosen img { outline:2px solid var(--accent); }
   .capture { position:relative; line-height:0; }
-  .capture svg { position:absolute; inset:0; width:100%; height:100%; }
+  .capture svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
   .capture.picking { cursor:crosshair; outline:2px dashed var(--manual); touch-action:none; user-select:none; }
   figure.wide { grid-column:1 / -1; }
   figure.wide .capture { width:fit-content; max-width:100%; margin:0 auto; }
@@ -64,26 +63,32 @@ PAGE = r"""<!doctype html>
   button:hover { background:#45413d; cursor:pointer; } input[type=text] { flex:1 1 220px; }
   .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; color:#111; font-weight:600; }
   .high { background:var(--high); } .medium { background:var(--medium); } .low { background:var(--low); color:#fff; }
-  .manual { background:var(--manual); } .event { background:var(--accent); }
+  .manual { background:var(--manual); } .event { background:var(--accent); } .todo { background:var(--low); color:#fff; }
   .meta { color:var(--dim); margin-top:8px; overflow-wrap:anywhere; } .flag { color:#e0a060; }
+  .yours { color:var(--manual); } .savedat { color:var(--high); }
   section.excluded h2 { text-decoration:line-through; color:var(--dim); }
+  #empty { color:var(--dim); padding:30px 0; }
 </style></head><body>
-<h1>Pilot review</h1>
+<h1>Photo review</h1>
 <p class="lead">Each row shows the capture with the outline used, then geometry only, <b>light</b> and <b>standard</b>.
 The outlined result is the one saved. To fix a crop press <b>Set corners</b> and click the four corners of the
-photograph on the capture, in any order; the capture grows and a magnifier follows the pointer so you can
-place each corner precisely (on a touch screen, drag and release). There is no Save button: every change is written to
-<code>review/overrides.json</code> and applied as soon as you make it, and the status on the right confirms it.</p>
+photograph, in any order; a magnifier follows the pointer (on a touch screen, drag and release). Tick
+<b>Looks good</b> to clear a photo from the "Needs review" list. There is no Save button: every change is written to
+<code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
 <div class="top">
   <button id="undo" disabled>Undo</button>
   <button id="redo" disabled>Redo</button>
+  <label>Show <select id="filter">
+    <option value="needs">Needs review</option><option value="all">All photos</option>
+    <option value="mine">Changed by you</option><option value="excluded">Excluded</option></select></label>
+  <label>Chapter <select id="chapter"><option value="">All</option></select></label>
+  <span id="count"></span>
   <span id="status" class="saved" role="status" aria-live="polite">Nothing changed yet</span>
 </div>
 <div id="list"></div>
 <div id="loupe" aria-hidden="true"></div>
 <script>
-const colours = {high:'#5ac85a', medium:'#ebc83c', low:'#e65046', manual:'#3ca0eb'};
-const names = {quad:'corners', rotation_cw_deg:'rotation', level:'enhancement', exclude:'exclude', note:'note'};
+const names = {quad:'corners', rotation_cw_deg:'rotation', level:'enhancement', exclude:'exclude', note:'note', reviewed:'looks good'};
 const picking = {}, savedAt = {}, undoStack = [], redoStack = [];
 let stamp = Date.now(), results = [];
 const img = (id, kind) => `/previews/${id}_${kind}.jpg?v=${stamp}`;
@@ -92,18 +97,17 @@ const clock = d => d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', s
 
 function card(r) {
   const d = r.detect, o = r.orientation, e = r.enhancement, ov = r.override || {};
-  const pts = d.quad_fraction.map(p => `${p[0]*100},${p[1]*100}`).join(' ');
   const fig = (kind, label) => `<figure class="${(kind === 'geom' ? 'none' : kind) === e.chosen ? 'chosen' : ''}">
-      <a href="${img(r.id, kind)}" target="_blank"><img src="${img(r.id, kind)}" alt=""></a><figcaption>${label}</figcaption></figure>`;
+      <a href="${img(r.id, kind)}" target="_blank"><img loading="lazy" src="${img(r.id, kind)}" alt=""></a><figcaption>${label}</figcaption></figure>`;
   const faces = o.faces ? `faces suggest ${o.faces.rotation_cw_deg}° (${o.faces.decisive ? 'decisive' : 'not decisive'})` : 'faces not checked';
   const mine = Object.keys(ov).map(k => names[k] || k);
   return `<section id="s-${r.id}" class="${ov.exclude ? 'excluded' : ''}">
     <div class="loading"><span class="box"><span class="spin"></span>Saving and reprocessing…</span></div>
-    <h2>#${r.capture_order} &nbsp; ${esc(r.filename)} &nbsp; <span class="tag event">${r.category}</span></h2>
+    <h2>#${r.capture_order} &nbsp; ${esc(r.filename)} &nbsp; <span class="tag event">${r.category}</span>
+      ${r.needs_review ? '<span class="tag todo">needs review</span>' : ''}</h2>
     <div class="shots">
-      <figure><div class="capture" data-id="${r.id}"><img src="${img(r.id, 'capture')}" alt="" draggable="false">
-        <svg viewBox="0 0 100 100" preserveAspectRatio="none"><polygon points="${pts}" fill="none"
-          stroke="${colours[d.level]}" stroke-width="2" vector-effect="non-scaling-stroke"/><g class="dots"></g></svg></div>
+      <figure><div class="capture" data-id="${r.id}"><img loading="lazy" src="${img(r.id, 'overlay')}" alt="" draggable="false">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="dots"></g></svg></div>
         <figcaption>capture + outline</figcaption></figure>
       ${fig('geom', 'geometry only')}${fig('light', 'light')}${fig('standard', 'standard')}
     </div>
@@ -115,6 +119,7 @@ function card(r) {
       <button data-act="cw" data-id="${r.id}" aria-label="Rotate right">&#8635; Rotate right</button>
       <label>Enhancement <select data-act="level" data-id="${r.id}">
         ${['none', 'light', 'standard'].map(l => `<option ${l === e.chosen ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label><input type="checkbox" data-act="reviewed" data-id="${r.id}" ${ov.reviewed ? 'checked' : ''}> Looks good</label>
       <label><input type="checkbox" data-act="exclude" data-id="${r.id}" ${ov.exclude ? 'checked' : ''}> Exclude</label>
       <input type="text" data-act="note" data-id="${r.id}" placeholder="Note" value="${esc(ov.note || '')}">
       ${mine.length ? `<button data-act="reset" data-id="${r.id}">Reset this photo</button>` : ''}
@@ -129,6 +134,25 @@ function card(r) {
   </section>`;
 }
 
+function visible(r) {
+  const f = document.getElementById('filter').value, c = document.getElementById('chapter').value, ov = r.override || {};
+  if (c && r.category !== c) return false;
+  if (f === 'needs') return r.needs_review;
+  if (f === 'mine') return Object.keys(ov).length > 0;
+  if (f === 'excluded') return !!ov.exclude;
+  return true;
+}
+// Redraws the list for the current filter. A photo you just settled stays visible until the next redraw.
+function render() {
+  const shown = results.filter(visible);
+  document.getElementById('list').innerHTML = shown.map(card).join('') ||
+    '<p id="empty">Nothing to show for this filter.</p>';
+  updateCount();
+}
+function updateCount() {
+  const shown = document.querySelectorAll('#list section').length, todo = results.filter(r => r.needs_review).length;
+  document.getElementById('count').textContent = `${shown} shown · ${todo} of ${results.length} need review`;
+}
 function setStatus(kind, text) {
   const el = document.getElementById('status');
   el.className = kind;
@@ -148,9 +172,15 @@ function refreshButtons() {
 }
 
 async function load() {
+  setStatus('saving', 'Loading…');
   results = await (await fetch('/api/results')).json();
   stamp = Date.now();
-  document.getElementById('list').innerHTML = results.map(card).join('');
+  const chapters = [...new Set(results.map(r => r.category))];
+  document.getElementById('chapter').innerHTML = '<option value="">All</option>' +
+    chapters.map(c => `<option>${esc(c)}</option>`).join('');
+  if (!results.some(r => r.needs_review)) document.getElementById('filter').value = 'all';
+  render();
+  setStatus('saved', 'Nothing changed yet');
 }
 
 // Sends one change, waits for the server to save and reprocess, then redraws that photo.
@@ -158,7 +188,8 @@ async function change(id, patch, record = true) {
   const i = results.findIndex(x => x.id === id), ov = results[i].override || {};
   const prev = {};
   for (const k in patch) prev[k] = k in ov ? ov[k] : null;
-  const section = document.getElementById('s-' + id);
+  let section = document.getElementById('s-' + id);
+  if (!section) { document.getElementById('filter').value = 'all'; render(); section = document.getElementById('s-' + id); }
   section.classList.add('busy');
   setStatus('saving', 'Saving…');
   try {
@@ -171,6 +202,7 @@ async function change(id, patch, record = true) {
     section.outerHTML = card(out);
     if (record) { undoStack.push({id, patch, prev}); redoStack.length = 0; }
     setStatus('saved', `Saved to overrides.json at ${clock(savedAt[id])}`);
+    updateCount();
     return true;
   } catch (err) {
     section.classList.remove('busy');
@@ -246,6 +278,8 @@ async function redo() {
 }
 document.getElementById('undo').addEventListener('click', undo);
 document.getElementById('redo').addEventListener('click', redo);
+document.getElementById('filter').addEventListener('change', () => { cancelPicking(); render(); });
+document.getElementById('chapter').addEventListener('change', () => { cancelPicking(); render(); });
 document.addEventListener('keydown', ev => {
   if (ev.key === 'Escape') return cancelPicking();
   if (ev.target.matches('input[type=text]')) return;
@@ -259,7 +293,8 @@ document.addEventListener('click', ev => {
   if (b.dataset.act === 'corners') {
     picking[id] = [];
     const c = document.querySelector(`.capture[data-id="${id}"]`);
-    c.classList.add('picking'); c.querySelector('polygon').style.display = 'none';
+    c.querySelector('img').src = img(id, 'capture');      // sharp, without the drawn outline
+    c.classList.add('picking');
     c.closest('figure').classList.add('wide');
     c.scrollIntoView({block: 'nearest'});
     b.textContent = 'Click 4 corners (Esc cancels)';
@@ -273,6 +308,7 @@ document.addEventListener('change', ev => {
   const t = ev.target, id = t.dataset.id;
   if (t.dataset.act === 'level') change(id, {level: t.value});
   if (t.dataset.act === 'exclude') change(id, {exclude: t.checked});
+  if (t.dataset.act === 'reviewed') change(id, {reviewed: t.checked});
   if (t.dataset.act === 'note') change(id, {note: t.value});
 });
 load();
@@ -280,7 +316,7 @@ load();
 
 
 def apply_override(photo_id: str, patch: dict) -> dict:
-    """Merge a change into overrides.json (None removes a key), reprocess the pilot, return that photo's result."""
+    """Merge a change into overrides.json (None removes a key), reprocess, return that photo's result."""
     with _lock:
         overrides = process.load_overrides()
         entry = overrides.get(photo_id, {})
@@ -296,7 +332,7 @@ def apply_override(photo_id: str, patch: dict) -> dict:
         else:
             overrides.pop(photo_id, None)
         process.save_overrides(overrides)
-        results = process.run(quiet=True)
+        results = process.run("all", quiet=True)
     return next(r for r in results if r["id"] == photo_id)
 
 
@@ -315,10 +351,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if route == "/api/results":
             with _lock:
-                results = process.run(quiet=True)
+                results = process.run("all", quiet=True)
             return self._send(json.dumps(results).encode("utf-8"), "application/json")
         if route.startswith("/previews/"):
-            base = (paths.PREVIEWS_DIR / "pilot").resolve()
+            base = (paths.PREVIEWS_DIR / "photos").resolve()
             target = (base / route[len("/previews/"):]).resolve()
             if base in target.parents and target.is_file():
                 return self._send(target.read_bytes(), "image/jpeg")
