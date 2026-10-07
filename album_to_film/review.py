@@ -56,6 +56,11 @@ PAGE = r"""<!doctype html>
   .tile[draggable="true"] { cursor:grab; }
   .tile.dragging { opacity:.35; }
   .tile.drop-before { box-shadow:-5px 0 0 var(--manual); } .tile.drop-after { box-shadow:5px 0 0 var(--manual); }
+  .tile .num { font-size:20px; font-weight:700; color:var(--ink); margin-right:6px; }
+  .tile.out img { opacity:.35; }
+  .chips { display:flex; gap:6px; margin-top:6px; }
+  .chips button { flex:1; min-height:30px; padding:2px 0; font-size:12px; }
+  .chips button.on { background:var(--accent); color:#111; font-weight:600; border-color:var(--accent); }
   .tile .seq { display:inline-block; min-width:24px; padding:0 6px; margin-right:4px; border-radius:10px; background:var(--accent);
                color:#111; font-weight:700; text-align:center; }
   .tile .mv { float:right; } .tile .mv button { min-height:26px; padding:0 8px; }
@@ -131,7 +136,8 @@ right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review
 <b>Duplicates</b> lists prints that were photographed more than once: keep one of each group and exclude the rest.
 <b>Films</b> shows which photographs each film uses: change the stars to re-rank, or force a photo <b>In</b> or <b>Out</b>
 (<b>Auto</b> lets the ranking decide). To change the order, drag a photo onto another one in the same chapter,
-or use its ◀ ▶ buttons; the order is one story order shared by both films. There is no Save button: every change is written to
+or use its ◀ ▶ buttons; the order is one story order shared by both films.
+<b>All photos</b> lists every photograph by its number, with a button per film to put it in or take it out. There is no Save button: every change is written to
 <code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
 <div class="top">
   <div class="tabs" role="tablist">
@@ -139,6 +145,7 @@ or use its ◀ ▶ buttons; the order is one story order shared by both films. T
     <button role="tab" id="tab-done" data-tab="done" aria-selected="false">Done<span class="n" id="n-done">0</span></button>
     <button role="tab" id="tab-dups" data-tab="dups" aria-selected="false">Duplicates<span class="n" id="n-dups">0</span></button>
     <button role="tab" id="tab-films" data-tab="films" aria-selected="false">Films</button>
+    <button role="tab" id="tab-all" data-tab="all" aria-selected="false">All photos<span class="n" id="n-all">0</span></button>
   </div>
   <button id="undo" disabled>Undo</button>
   <button id="redo" disabled>Redo</button>
@@ -276,12 +283,33 @@ function renderFilms() {
     order.map(ch => `${ch} ${info.by_chapter[ch] || 0}`).join(' · ');
   document.getElementById('count').textContent = `${list.length} shown`;
 }
+// Every photograph by number, so any of them can be named or added to a film directly.
+function renderAll() {
+  const c = document.getElementById('chapter').value;
+  const list = results.filter(r => !c || r.category === c).sort((a, b) => a.capture_order - b.capture_order);
+  const chip = (r, film, label) => {
+    const on = r.editorial.films[film].selected;
+    return `<button class="${on ? 'on' : ''}" data-act="toggle" data-film="${film}" data-id="${r.id}"
+      aria-pressed="${on}" title="${on ? 'In this film; click to take out' : 'Not in this film; click to add'}">${on ? '✓ ' : '+ '}${label}</button>`;
+  };
+  const html = list.map(r => {
+    const out = (r.override || {}).exclude;
+    return `<div class="tile ${out ? 'out' : ''}" id="t-${r.id}">
+      <a href="${img(r.id, 'light')}" target="_blank" draggable="false"><img loading="lazy" src="${img(r.id, 'light')}" alt="" draggable="false"></a>
+      <div class="cap"><span class="num">${r.capture_order}</span>${esc(r.category)}${out ? ' · excluded' : ''}</div>
+      ${r.editorial ? `<div class="chips">${Object.entries(films.films).map(([k, f]) => chip(r, k, f.label)).join('')}</div>` : ''}</div>`;
+  }).join('');
+  document.getElementById('list').innerHTML = html ? `<div class="grid">${html}</div>` : '<p id="empty">Nothing to show for this filter.</p>';
+  document.getElementById('count').textContent = `${list.length} shown`;
+}
 async function refreshAll() {
   results = await (await fetch('/api/results')).json();
   films = await (await fetch('/api/films')).json();
 }
 function render() {
+  document.getElementById('n-all').textContent = results.length;
   if (tab === 'films') return renderFilms();
+  if (tab === 'all') return renderAll();
   const shown = results.filter(visible);
   if (tab === 'dups') shown.sort((a, b) => a.duplicate.group - b.duplicate.group || a.capture_order - b.capture_order);
   document.getElementById('list').innerHTML = shown.map(card).join('') ||
@@ -289,7 +317,7 @@ function render() {
   updateCount();
 }
 function updateCount() {
-  if (tab === 'films') return;
+  if (tab === 'films' || tab === 'all') return;
   const shown = document.querySelectorAll('#list section:not(.leaving)').length, todo = results.filter(r => r.needs_review).length;
   document.getElementById('n-todo').textContent = todo;
   document.getElementById('n-done').textContent = results.length - todo;
@@ -344,7 +372,7 @@ async function change(id, patch, record = true) {
     if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
     results[i] = out;
     savedAt[id] = new Date();
-    if (tab === 'films') {
+    if (tab === 'films' || tab === 'all') {
       await refreshAll();
       render();
       if (record) { undoStack.push({id, patch, prev}); redoStack.length = 0; }
@@ -618,6 +646,7 @@ document.addEventListener('click', ev => {
   const b = ev.target.closest('button[data-act]');
   if (!b) return;
   const id = b.dataset.id, r = results.find(x => x.id === id);
+  if (b.dataset.act === 'toggle') return change(id, {[b.dataset.film]: r.editorial.films[b.dataset.film].selected ? 'out' : 'in'});
   if (b.dataset.act === 'move') return stepMove(id, +b.dataset.v);
   if (b.dataset.act === 'star') return change(id, {emotional: +b.dataset.v});
   if (b.dataset.act === 'pick') return change(id, {[document.getElementById('film').value]: b.dataset.v === 'auto' ? null : b.dataset.v});
