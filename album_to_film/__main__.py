@@ -23,6 +23,8 @@ def main() -> int:
     rd.add_argument("--pilot", action="store_true", help="a short cut across the chapter changes")
     rd.add_argument("--draft", action="store_true", help="faster, lower quality")
     sub.add_parser("music", help="analyse the configured song: length, tempo, beats")
+    rb = sub.add_parser("rebuild", help="regenerate everything derived from the photographs, in order (see REBUILD.md)")
+    rb.add_argument("--render", action="store_true", help="also render every film at 1080p")
     sub.add_parser("review", help="serve the interactive review page on 127.0.0.1:8765")
     args = parser.parse_args()
 
@@ -59,6 +61,17 @@ def main() -> int:
     elif args.stage == "music":
         from . import music
         music.run()
+    elif args.stage == "rebuild":
+        from . import analyze, catalog, dedupe, ingest, process, render, timeline
+        ingest.run()
+        analyze.run(None)
+        process.run("all")                  # restore every photograph, applying your saved decisions
+        dedupe.run()
+        process.run("all", quiet=True)      # attach duplicate groups and recompute each film's selection
+        for film in catalog.load_config("films.json")["films"]:
+            timeline.run(film)
+            if args.render:
+                render.run(film, 1080, False, False)
     elif args.stage == "review":
         from . import review
         review.run()
