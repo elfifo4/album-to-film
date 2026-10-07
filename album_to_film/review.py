@@ -52,19 +52,23 @@ PAGE = r"""<!doctype html>
   .handle::after { content:""; position:absolute; inset:-12px; }
   .handle.dragging { cursor:grabbing; background:transparent; }
   .handle:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
-  .editbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:center; margin-top:10px; color:var(--dim); }
+  #editctl { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:4px 8px; border-radius:8px;
+             background:#22394a; border:1px solid var(--manual); }
+  #editctl[hidden] { display:none; }
+  #edithint { color:var(--ink); }
+  figure.wide { scroll-margin-top:150px; }
   button.primary { background:#2f6f9f; border-color:var(--manual); font-weight:600; }
   button.primary:hover { background:#3a82b8; } button:disabled { opacity:.4; cursor:default; }
   figure.wide { grid-column:1 / -1; }
   figure.wide .capture { width:fit-content; max-width:100%; margin:0 auto; }
-  figure.wide img { width:auto; max-width:100%; height:auto; max-height:calc(100vh - 90px); }
+  figure.wide img { width:auto; max-width:100%; height:auto; max-height:calc(100vh - 170px); }
   #loupe { display:none; position:fixed; z-index:20; width:200px; height:200px; border-radius:50%; pointer-events:none;
            border:2px solid var(--manual); box-shadow:0 6px 22px #000c; background-color:#111; background-repeat:no-repeat; }
   #loupe::before, #loupe::after { content:""; position:absolute; }
   #loupe::before { left:50%; top:0; bottom:0; width:1px; margin-left:-.5px;
-           background:linear-gradient(to bottom, #3ca0eb 0 44%, transparent 44% 56%, #3ca0eb 56%); }
+           background:linear-gradient(to bottom, #3ca0eb 0 48.5%, transparent 48.5% 51.5%, #3ca0eb 51.5%); }
   #loupe::after { top:50%; left:0; right:0; height:1px; margin-top:-.5px;
-           background:linear-gradient(to right, #3ca0eb 0 44%, transparent 44% 56%, #3ca0eb 56%); }
+           background:linear-gradient(to right, #3ca0eb 0 48.5%, transparent 48.5% 51.5%, #3ca0eb 51.5%); }
   .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:12px; }
   button, select, input[type=text] { font:inherit; color:var(--ink); background:#35322f; border:1px solid var(--line);
           border-radius:6px; padding:6px 10px; min-height:34px; }
@@ -80,7 +84,7 @@ PAGE = r"""<!doctype html>
 <h1>Photo review</h1>
 <p class="lead">Each row shows the capture with the outline used, then geometry only, <b>light</b> and <b>standard</b>.
 The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: the outline appears with four handles, drag any of them
-(a magnifier shows the exact spot; arrow keys nudge a focused handle), then press <b>Apply corners</b>. Tick
+(a magnifier shows the exact spot; arrow keys nudge a focused handle), then press <b>Apply corners</b> in the bar at the top. Tick
 <b>Looks good</b> to clear a photo from the "Needs review" list. There is no Save button: every change is written to
 <code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
 <div class="top">
@@ -90,6 +94,11 @@ The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: t
     <option value="needs">Needs review</option><option value="all">All photos</option>
     <option value="mine">Changed by you</option><option value="excluded">Excluded</option></select></label>
   <label>Chapter <select id="chapter"><option value="">All</option></select></label>
+  <span id="editctl" hidden>
+    <button class="primary" data-act="apply" id="apply" disabled>Apply corners</button>
+    <button data-act="cancel">Cancel</button>
+    <span id="edithint">Drag a corner, then Apply (Enter). Esc cancels.</span>
+  </span>
   <span id="count"></span>
   <span id="status" class="saved" role="status" aria-live="polite">Nothing changed yet</span>
 </div>
@@ -238,23 +247,21 @@ function startEdit(id) {
     `<svg viewBox="0 0 100 100" preserveAspectRatio="none"><polygon fill="rgba(60,160,235,.08)" stroke="#3ca0eb"
        stroke-width="2" vector-effect="non-scaling-stroke"/></svg>` +
     editing.pts.map((_, i) => `<div class="handle" data-i="${i}" tabindex="0" role="button" aria-label="Corner ${i + 1}, drag or use arrow keys"></div>`).join(''));
-  cap.closest('figure').insertAdjacentHTML('beforeend', `<div class="editbar">
-    <button class="primary" data-act="apply" data-id="${id}" disabled>Apply corners</button>
-    <button data-act="cancel" data-id="${id}">Cancel</button>
-    <span>Drag a corner to the edge of the photograph. Enter applies, Esc cancels.</span></div>`);
+  document.getElementById('editctl').hidden = false;
   drawEdit();
-  cap.scrollIntoView({block: 'nearest'});
+  cap.closest('figure').scrollIntoView({block: 'start'});
   refreshButtons();
 }
 function drawEdit() {
   const cap = captureOf(editing.id);
   cap.querySelector('polygon').setAttribute('points', editing.pts.map(p => `${p[0] * 100},${p[1] * 100}`).join(' '));
   cap.querySelectorAll('.handle').forEach((h, i) => { h.style.left = editing.pts[i][0] * 100 + '%'; h.style.top = editing.pts[i][1] * 100 + '%'; });
-  cap.closest('figure').querySelector('button[data-act="apply"]').disabled = !editing.history.length;
+  document.getElementById('apply').disabled = !editing.history.length;
 }
 function cancelEdit() {
   hideLoupe();
   drag = null;
+  document.getElementById('editctl').hidden = true;
   if (!editing) return;
   const id = editing.id;
   editing = null;
@@ -267,6 +274,7 @@ function applyEdit() {
   const {id, pts} = editing;
   editing = null;
   hideLoupe();
+  document.getElementById('editctl').hidden = true;
   change(id, {quad: pts});
 }
 
