@@ -106,10 +106,22 @@ def render(tl: dict, out_path, height: int, draft: bool = False) -> dict:
     fps, frames = tl["fps"], int(round(tl["duration"] * tl["fps"]))
     out_path = paths.assert_not_in_source(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    video_in = ["-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}", "-r", str(fps), "-i", "-"]
+    audio_in, audio_out = [], ["-an"]
+    if tl.get("audio"):
+        track, length = tl["audio"][0], frames / fps
+        fades = []
+        if track.get("fade_in"):
+            fades.append(f"afade=t=in:st=0:d={track['fade_in']}")
+        if track.get("fade_out"):
+            fades.append(f"afade=t=out:st={max(length - track['fade_out'], 0):.3f}:d={track['fade_out']}")
+        fades.append(f"volume={track.get('gain', 1.0)}")
+        audio_in = ["-ss", f"{track['offset']:.3f}", "-t", f"{length:.3f}", "-i", str(paths.ROOT / track["path"])]
+        audio_out = ["-map", "0:v", "-map", "1:a", "-af", ",".join(fades), "-c:a", "aac", "-b:a", "192k", "-shortest"]
     encoder = subprocess.Popen(
-        [ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
-         "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264", "-preset", "veryfast" if draft else cfg["preset"],
-         "-crf", str(cfg["crf"] + (5 if draft else 0)), "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path)],
+        [ffmpeg, "-y", "-loglevel", "error", *video_in, *audio_in, "-c:v", "libx264",
+         "-preset", "veryfast" if draft else cfg["preset"], "-crf", str(cfg["crf"] + (5 if draft else 0)),
+         "-pix_fmt", "yuv420p", *audio_out, "-movflags", "+faststart", str(out_path)],
         stdin=subprocess.PIPE)
     layers: dict = {}
     started, cpu0 = time.time(), time.process_time()

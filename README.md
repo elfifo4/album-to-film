@@ -65,8 +65,9 @@ reports, review decisions, music and video cannot be committed by accident, what
 | `dedupe` | Groups repeated captures of the same print and tells them apart from similar shots of one scene (flag only, nothing deleted) | done |
 | editorial | Per-photo scores and a separate selection for each film, from the profiles in `config/films.json`; adjustable in the review page's Films tab (stars, In / Auto / Out) | done |
 | `timeline` | Resolves each film into exact cut points, transitions and camera moves. Shot lengths come from editorial constraints (preferred, min, max, weight); a tempo map only snaps cuts to nearby beats within those limits | done |
-| `render` | Ken Burns motion, crossfades and chapter dips, drawn frame by frame with sub-pixel precision and encoded with FFmpeg; short pilots so far | in progress |
-| titles and music | Chapter title cards, a song, cuts fitted to its beats | planned |
+| `render` | Ken Burns motion, crossfades and chapter dips, drawn frame by frame with sub-pixel precision and encoded with FFmpeg together with the song | done |
+| `music` | Analyses a song (length, tempo, beats) with plain NumPy. A film can pin a photograph to a moment of the song, either by starting the song later or by fitting shot lengths; cuts then snap to beats | done |
+| titles | Chapter title cards | planned |
 
 ### Finding the print
 

@@ -12,7 +12,7 @@ import json
 import cv2
 import numpy as np
 
-from . import catalog, orient, paths
+from . import catalog, music as music_mod, orient, paths
 
 FACES_FILE = paths.REPORTS_DIR / "faces.json"
 
@@ -51,16 +51,20 @@ def beat_times(tempo: dict, until: float) -> tuple[list[float], list[float]]:
 
 
 def snap_to_beats(bounds: list[float], lo: list[float], hi: list[float], chapter_start: list[bool], tempo: dict,
-                  max_shift: float) -> tuple[list[float], int]:
-    """Move inner boundaries onto beats (bars for chapter changes) when both neighbours stay within limits."""
+                  max_shift: float, fixed: set[int] = frozenset()) -> tuple[list[float], int]:
+    """Move inner boundaries onto beats (bars for chapter changes) when both neighbours stay within limits.
+
+    Boundaries in `fixed` are anchors (a photograph pinned to a moment of the song) and are never moved.
+    """
     beats, bars = beat_times(tempo, bounds[-1])
     out, snapped = list(bounds), 0
     for k in range(1, len(bounds) - 1):
         grid = bars if chapter_start[k] else beats
-        if not grid:
+        if not grid or k in fixed:
             continue
         target = min(grid, key=lambda b: abs(b - bounds[k]))
         before, after = target - out[k - 1], bounds[k + 1] - target
+        after = (out[k + 1] if k + 1 in fixed else bounds[k + 1]) - target
         if abs(target - bounds[k]) <= max_shift and lo[k - 1] <= before <= hi[k - 1] and lo[k] <= after <= hi[k]:
             out[k] = target
             snapped += 1
@@ -144,28 +148,77 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
     photos = json.loads((paths.EDITORIAL_DIR / "photos.json").read_text(encoding="utf-8"))
     editorial = {p["id"]: p for p in photos}
     ids = photo_ids or selection["order"]
-    if tempo is None:
-        tempo_file = paths.TIMELINE_DIR / f"{film}.tempo.json"
-        tempo = json.loads(tempo_file.read_text(encoding="utf-8")) if tempo_file.exists() and not photo_ids else {}
-    total = float(target_seconds or tempo.get("duration") or prof["target_seconds"])
+    song = music_mod.for_film(film) if not photo_ids and tempo is None else None
+    tempo = tempo or {}
+    warnings = []
 
     chapters = [results[i]["category"] for i in ids]
     sizes = {c: chapters.count(c) for c in set(chapters)}
     preferred, lo, hi = [], [], []
     for pid, chapter in zip(ids, chapters):
         e = editorial.get(pid, {})
+        if sizes[chapter] <= cfg["bridge_chapter_max_photos"] and not e.get("preferred_duration"):
+            seconds = prof["bridge_shot_seconds"]       # long enough to read, whatever the film's pace
+            preferred.append(seconds), lo.append(seconds * 0.9), hi.append(seconds * 1.3)
+            continue
         weight = float(e.get("duration_weight") or 1.0) * cfg["emphasis_duration_weight"].get(str(e.get("emotional_score") or 3), 1.0)
-        if sizes[chapter] <= cfg["bridge_chapter_max_photos"]:
-            weight *= prof["bridge_duration_weight"]
         preferred.append(float(e.get("preferred_duration") or prof["nominal_shot_seconds"]) * weight)
         lo.append(float(e.get("min_duration") or prof["min_shot_seconds"]))
         hi.append(float(e.get("max_duration") or prof["max_shot_seconds"]))
-    durations = fit_durations(preferred, lo, hi, total)
-    bounds = [0.0] + np.cumsum(durations).round(4).tolist()
     chapter_start = [False] + [chapters[k] != chapters[k - 1] for k in range(1, len(ids))] + [False]
-    snapped = 0
-    if tempo.get("bpm") or tempo.get("beats"):
-        bounds, snapped = snap_to_beats(bounds, lo, hi, chapter_start, tempo, tempo.get("max_snap_seconds", 0.35))
+
+    def fit_segment(first: int, last: int, seconds: float) -> list[float]:
+        """Shots first..last-1 must add up to exactly `seconds`; limits give way only if they cannot."""
+        d = fit_durations(preferred[first:last], lo[first:last], hi[first:last], seconds)
+        if abs(sum(d) - seconds) > 0.01:
+            warnings.append(f"shots {first + 1}-{last} had to leave their length limits to fill {seconds:.1f}s")
+            d = [x * seconds / sum(d) for x in d]
+        return d
+
+    offset, fixed, audio, snapped = 0.0, set(), [], 0
+    if song:
+        order_index = {results[i]["capture_order"]: k for k, i in enumerate(ids)}
+        anchors = []
+        for anchor in song.get("anchors", []):
+            if anchor["capture_order"] not in order_index:
+                warnings.append(f"anchor photo #{anchor['capture_order']} is not in this film")
+                continue
+            beat = min(song["beats"], key=lambda b: abs(b - anchor["song_time"]))
+            anchors.append((order_index[anchor["capture_order"]], beat if abs(beat - anchor["song_time"]) <= 0.4 else anchor["song_time"]))
+        anchors.sort()
+        if song.get("align") == "shift_music":
+            # Keep the film's own pace and length; start the song late enough for the moment to land on the photograph.
+            total = float(target_seconds or prof["target_seconds"])
+            durations = fit_segment(0, len(ids), total)
+            if anchors:
+                k, song_time = anchors[0]
+                offset = song_time - sum(durations[:k])
+                if offset < 0:
+                    warnings.append("the song moment comes before the photograph even with the song started at its beginning")
+                    offset = 0.0
+                fixed = {k}
+        else:
+            # Play the song from start_at and fit the shots to it: each anchor pins a photograph to a song moment.
+            offset = float(song.get("start_at", 0.0))
+            total = float(target_seconds or (song["duration"] - offset))
+            marks = [(0, 0.0)] + [(k, t - offset) for k, t in anchors if 0 < k < len(ids)] + [(len(ids), total)]
+            durations = []
+            for (k0, t0), (k1, t1) in zip(marks, marks[1:]):
+                durations += fit_segment(k0, k1, t1 - t0)
+            fixed = {k for k, _ in marks[1:-1]}
+        if offset + total > song["duration"] + 0.01:
+            warnings.append("the film is longer than the rest of the song")
+        bounds = [0.0] + np.cumsum(durations).round(4).tolist()
+        tempo = {"beats": [round(b - offset, 3) for b in song["beats"] if 0 <= b - offset <= total],
+                 "beats_per_bar": song["beats_per_bar"], "bpm_estimate": song["bpm"], "max_snap_seconds": 0.35}
+        bounds, snapped = snap_to_beats(bounds, lo, hi, [False] * len(chapter_start), tempo, tempo["max_snap_seconds"], fixed)
+        audio = [{"path": song["path"], "offset": round(offset, 3), "gain": 1.0,
+                  "fade_in": song.get("fade_in_seconds", 0.0), "fade_out": song.get("fade_out_seconds", 3.0)}]
+    else:
+        total = float(target_seconds or tempo.get("duration") or prof["target_seconds"])
+        bounds = [0.0] + np.cumsum(fit_segment(0, len(ids), total)).round(4).tolist()
+        if tempo.get("bpm") or tempo.get("beats"):
+            bounds, snapped = snap_to_beats(bounds, lo, hi, chapter_start, tempo, tempo.get("max_snap_seconds", 0.35))
 
     looks = face_focus(ids, results)
     canvas_aspect = out_cfg["aspect"][0] / out_cfg["aspect"][1]
@@ -199,8 +252,8 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
     timeline = {
         "film": film, "name": name or film, "label": prof["label"], "fps": out_cfg["fps"], "aspect": out_cfg["aspect"],
         "duration": round(bounds[-1], 4), "fade_out_seconds": prof["fade_out_seconds"],
-        "tempo": tempo, "boundaries_on_beats": snapped,
-        "audio": [],      # later: [{"path", "start", "gain", "fade_in", "fade_out", "duck": [...]}]
+        "tempo": tempo, "boundaries_on_beats": snapped, "anchored_boundaries": sorted(fixed), "warnings": warnings,
+        "audio": audio,   # [{"path", "offset" (song time at film start), "gain", "fade_in", "fade_out"}]
         "shots": shots,
     }
     catalog.write_text_atomic(paths.TIMELINE_DIR / f"{timeline['name']}.resolved.json", json.dumps(timeline, indent=1, ensure_ascii=False))
@@ -228,4 +281,11 @@ def run(film: str) -> None:
     lengths = [s["end"] - s["start"] for s in t["shots"]]
     m, s = divmod(round(t["duration"]), 60)
     print(f"timeline {film}: {len(t['shots'])} shots, {m}:{s:02d}, shot length {min(lengths):.1f}-{max(lengths):.1f}s "
-          f"(median {np.median(lengths):.1f}s), boundaries on beats: {t['boundaries_on_beats']}")
+          f"(median {np.median(lengths):.1f}s), cuts on beats: {t['boundaries_on_beats']} of {len(t['shots']) - 1}")
+    for a in t["audio"]:
+        print(f"  music: starts {a['offset']:.1f}s into the song")
+    for k in t["anchored_boundaries"]:
+        shot = t["shots"][k]
+        print(f"  anchor: #{shot['capture_order']} starts at {shot['start']:.2f}s = song {shot['start'] + t['audio'][0]['offset']:.2f}s")
+    for w in t["warnings"]:
+        print("  warning:", w)

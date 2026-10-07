@@ -22,6 +22,7 @@ def main() -> int:
     rd.add_argument("--height", type=int, default=1080, help="frame height in pixels, e.g. 540 or 1080")
     rd.add_argument("--pilot", action="store_true", help="a short cut across the chapter changes")
     rd.add_argument("--draft", action="store_true", help="faster, lower quality")
+    sub.add_parser("music", help="analyse the configured song: length, tempo, beats")
     sub.add_parser("review", help="serve the interactive review page on 127.0.0.1:8765")
     args = parser.parse_args()
 
@@ -55,6 +56,9 @@ def main() -> int:
     elif args.stage == "render":
         from . import render
         render.run(args.film, args.height, args.pilot, args.draft)
+    elif args.stage == "music":
+        from . import music
+        music.run()
     elif args.stage == "review":
         from . import review
         review.run()

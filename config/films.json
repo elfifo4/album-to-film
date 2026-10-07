@@ -1,5 +1,5 @@
 {
-  "_note": "One profile per film. Both select from the same restored photographs. Durations here are editorial targets; the timeline solver later fits real shot lengths (and music) within each film's min/max.",
+  "_note": "One profile per film. Both select from the same restored photographs. Durations here are editorial targets; the timeline solver later fits real shot lengths (and music) within each film's min/max. A bridge chapter (a tiny chapter such as an invitation) gets one shot of bridge_shot_seconds so it can be read.",
   "bridge_chapter_max_photos": 3,
   "films": {
     "trailer": {
@@ -13,7 +13,6 @@
         "quality": 0.5
       },
       "avoid_similar_shots": true,
-      "bridge_duration_weight": 1.5,
       "fade_in_seconds": 0.5,
       "fade_out_seconds": 1.0,
       "transition": {
@@ -33,7 +32,8 @@
           "pull_out",
           "pan"
         ]
-      }
+      },
+      "bridge_shot_seconds": 4.5
     },
     "full": {
       "label": "Full movie",
@@ -46,7 +46,6 @@
         "quality": 0.5
       },
       "avoid_similar_shots": false,
-      "bridge_duration_weight": 1.6,
       "fade_in_seconds": 1.0,
       "fade_out_seconds": 2.0,
       "transition": {
@@ -65,7 +64,8 @@
           "push_in",
           "pull_out"
         ]
-      }
+      },
+      "bridge_shot_seconds": 9.0
     }
   },
   "output": {
