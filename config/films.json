@@ -4,7 +4,7 @@
   "films": {
     "trailer": {
       "label": "Trailer",
-      "target_seconds": 75,
+      "target_seconds": 120,
       "nominal_shot_seconds": 2.1,
       "min_shot_seconds": 1.2,
       "max_shot_seconds": 3.5,

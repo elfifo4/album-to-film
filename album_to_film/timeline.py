@@ -194,8 +194,10 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
                 k, song_time = anchors[0]
                 offset = song_time - sum(durations[:k])
                 if offset < 0:
-                    warnings.append("the song moment comes before the photograph even with the song started at its beginning")
+                    # Even from its very beginning the song reaches the moment first: play it from the
+                    # start and tighten the shots before the photograph so they arrive together.
                     offset = 0.0
+                    durations = fit_segment(0, k, song_time) + fit_segment(k, len(ids), total - song_time)
                 fixed = {k}
         else:
             # Play the song from start_at and fit the shots to it: each anchor pins a photograph to a song moment.
