@@ -6,9 +6,13 @@ reprocessed at once.
 """
 import json
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import editorial, paths, process
+import cv2
+import numpy as np
+
+from . import catalog, editorial, paths, process, titles
 
 PORT = 8765
 ALLOWED_KEYS = {"quad", "rotation_cw_deg", "level", "exclude", "note", "reviewed", "emotional", "trailer", "full"}
@@ -74,6 +78,22 @@ PAGE = r"""<!doctype html>
   .seg button { flex:1; border-radius:0; min-height:32px; padding:4px 0; }
   .seg button:first-child { border-radius:6px 0 0 6px; } .seg button:last-child { border-radius:0 6px 6px 0; }
   .seg button.active { background:var(--accent); color:#111; font-weight:600; border-color:var(--accent); }
+  .tile.title { border-color:var(--manual); }
+  .tile.title .card { height:150px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
+                      background:#000; border-radius:4px; color:#f3ead8; text-align:center; padding:8px; overflow:hidden; }
+  .tile.title .card b { font-size:17px; } .tile.title .card small { color:#cfc6b4; }
+  .tile.title.off { opacity:.5; }
+  button.addtitle { min-height:150px; border:2px dashed var(--line); background:none; color:var(--dim); border-radius:8px; font-size:14px; }
+  button.addtitle:hover { border-color:var(--manual); color:var(--ink); background:#22394a55; }
+  #titledlg { position:fixed; inset:0; z-index:40; background:#000b; display:flex; align-items:center; justify-content:center; padding:16px; }
+  #titledlg[hidden] { display:none; }
+  #titledlg .box { background:var(--card); border-radius:10px; padding:18px; width:min(640px, 100%); max-height:100%; overflow:auto;
+                   display:grid; gap:10px; }
+  #titledlg h2 { margin:0; } #titledlg label { display:grid; gap:4px; color:var(--dim); }
+  #titledlg input[type=text], #titledlg input[type=number], #titledlg select { width:100%; color:var(--ink); }
+  #titledlg .row { display:flex; flex-wrap:wrap; gap:14px; align-items:end; }
+  #titledlg .row label { flex:1 1 140px; } #titledlg .row label.check { flex:0 0 auto; display:flex; align-items:center; gap:6px; color:var(--ink); }
+  #titlepreview { width:100%; aspect-ratio:16 / 9; background:#000; border-radius:6px; display:block; }
   #lightbox { position:fixed; inset:0; z-index:50; background:#000e; display:flex; align-items:center; justify-content:center; }
   #lightbox[hidden] { display:none; }
   #lightbox img { max-width:calc(100vw - 140px); max-height:calc(100vh - 80px); object-fit:contain; border-radius:4px; }
@@ -117,7 +137,7 @@ PAGE = r"""<!doctype html>
   #loupe::after { top:50%; left:0; right:0; height:1px; margin-top:-.5px;
            background:linear-gradient(to right, #3ca0eb 0 48.5%, transparent 48.5% 51.5%, #3ca0eb 51.5%); }
   .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:12px; }
-  button, select, input[type=text] { font:inherit; color:var(--ink); background:#35322f; border:1px solid var(--line);
+  button, select, input[type=text], input[type=number] { font:inherit; color:var(--ink); background:#35322f; border:1px solid var(--line);
           border-radius:6px; padding:6px 10px; min-height:34px; }
   button:hover { background:#45413d; cursor:pointer; } input[type=text] { flex:1 1 220px; }
   .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; color:#111; font-weight:600; }
@@ -135,7 +155,7 @@ The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: t
 right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review</b> to <b>Done</b>.
 <b>Duplicates</b> lists prints that were photographed more than once: keep one of each group and exclude the rest.
 <b>Films</b> shows which photographs each film uses: change the stars to re-rank, or force a photo <b>In</b> or <b>Out</b>
-(<b>Auto</b> lets the ranking decide). To change the order, drag a photo onto another one in the same chapter,
+(<b>Auto</b> lets the ranking decide). Dashed boxes in the film are places for a title card (opening, start of a chapter, closing). To change the order, drag a photo onto another one in the same chapter,
 or use its ◀ ▶ buttons; the order is one story order shared by both films.
 <b>All photos</b> lists every photograph by its number, with a button per film to put it in or take it out. There is no Save button: every change is written to
 <code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
@@ -170,6 +190,23 @@ or use its ◀ ▶ buttons; the order is one story order shared by both films.
 </div>
 <div id="list"></div>
 <div id="loupe" aria-hidden="true"></div>
+<div id="titledlg" hidden role="dialog" aria-modal="true" aria-labelledby="titlehead">
+  <div class="box">
+    <h2 id="titlehead">Title card</h2>
+    <img id="titlepreview" alt="Preview of the title card">
+    <label>Main line <input type="text" id="t-text" dir="auto" maxlength="120"></label>
+    <label>Second line (optional) <input type="text" id="t-sub" dir="auto" maxlength="160"></label>
+    <div class="row">
+      <label>Seconds on screen <input type="number" id="t-seconds" min="1" max="12" step="0.5"></label>
+      <label>Background <select id="t-bg"><option value="black">Black</option><option value="photo">Blurred photograph</option></select></label>
+    </div>
+    <div class="row" id="t-films"></div>
+    <div class="row">
+      <button class="primary" id="t-apply">Apply</button>
+      <button id="t-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
 <div id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Enlarged photograph">
   <button id="lbclose" aria-label="Close">&times;</button>
   <button id="lbprev" aria-label="Previous">&#8249;</button>
@@ -182,6 +219,7 @@ const names = {quad:'corners', rotation_cw_deg:'rotation', level:'enhancement', 
 const savedAt = {}, undoStack = [], redoStack = [];
 let stamp = Date.now(), results = [];
 let films = {films: {}, chapter_order: []};
+let titleData = {slots: [], cards: {}};
 let tab = 'todo';      // which tab is open: 'todo' (To review) or 'done'
 let editing = null;   // {id, pts: four [x, y] fractions of the capture, history: [{i, before}]}
 let drag = null;
@@ -271,16 +309,35 @@ function renderFilms() {
   if (show === 'rest') list = list.filter(r => !r.editorial.films[film].selected);
   list.sort((a, b) => a.editorial.position - b.editorial.position);
   document.getElementById('resetorder').hidden = !films.custom_order;
-  let html = '', current = null;
+  const withTitles = show === 'selected' && !c && list.length;      // title slots only in the film as it will play
+  const slotTile = name => {
+    const slot = titleData.slots.find(x => x.slot === name), card = titleData.cards[name];
+    if (!slot) return '';
+    if (!card) return `<button class="addtitle" data-act="title-edit" data-slot="${esc(name)}">+ ${esc(slot.label)}</button>`;
+    const here = card.films.includes(film);
+    return `<div class="tile title ${here ? '' : 'off'}">
+      <div class="card" dir="auto"><b>${esc(card.text)}</b>${card.subtext ? `<small>${esc(card.subtext)}</small>` : ''}</div>
+      <div class="cap">Title · ${card.seconds}s${here ? '' : ' · not in this film'}</div>
+      <div class="chips"><button data-act="title-edit" data-slot="${esc(name)}">Edit</button>
+        <button data-act="title-delete" data-slot="${esc(name)}">Delete</button></div></div>`;
+  };
+  let html = withTitles ? slotTile('opening') : '', current = null;
   for (const r of list) {
-    if (r.category !== current) { current = r.category; html += `<h2 class="chapterhead">${esc(current)}</h2>`; }
+    if (r.category !== current) {
+      current = r.category;
+      html += `<h2 class="chapterhead">${esc(current)}</h2>` + (withTitles ? slotTile('chapter:' + current) : '');
+    }
     html += tile(r);
   }
+  if (withTitles) html += `<h2 class="chapterhead">end</h2>` + slotTile('closing');
+  const cards = Object.values(titleData.cards).filter(x => x.films.includes(film));
+  const titleSeconds = cards.reduce((sum, x) => sum + x.seconds, 0);
   document.getElementById('list').innerHTML = html ? `<div class="grid">${html}</div>` : '<p id="empty">Nothing to show for this filter.</p>';
   const t = info.estimated_seconds, mmss = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
   document.getElementById('filmsummary').textContent = `${info.label}: ${info.count} photographs, about ${mmss} ` +
     `(target ${Math.floor(info.target_seconds / 60)}:${String(info.target_seconds % 60).padStart(2, '0')}) · ` +
-    order.map(ch => `${ch} ${info.by_chapter[ch] || 0}`).join(' · ');
+    order.map(ch => `${ch} ${info.by_chapter[ch] || 0}`).join(' · ') +
+    (cards.length ? ` · ${cards.length} title card${cards.length > 1 ? 's' : ''} (${titleSeconds}s, taken evenly from the photographs' time)` : '');
   document.getElementById('count').textContent = `${list.length} shown`;
 }
 // Every photograph by number, so any of them can be named or added to a film directly.
@@ -305,6 +362,7 @@ function renderAll() {
 async function refreshAll() {
   results = await (await fetch('/api/results')).json();
   films = await (await fetch('/api/films')).json();
+  titleData = await (await fetch('/api/titles')).json();
 }
 function render() {
   document.getElementById('n-all').textContent = results.length;
@@ -334,6 +392,7 @@ function setStatus(kind, text) {
 }
 function describe(entry) {
   if (entry.kind === 'order') return 'order';
+  if (entry.kind === 'titles') return 'title card';
   const r = results.find(x => x.id === entry.id);
   return `${Object.keys(entry.patch).map(k => names[k] || k).join(', ')} on #${r.capture_order}`;
 }
@@ -539,7 +598,65 @@ document.addEventListener('click', ev => {
   if (ev.target.id === 'lbclose' || ev.target.id === 'lightbox') closeLightbox();    // the X, or the dark area around the photo
 });
 
-const replay = (entry, which) => entry.kind === 'order' ? sendOrder({order: entry[which]}, false) : change(entry.id, entry[which], false);
+const replay = (entry, which) => entry.kind === 'order' ? sendOrder({order: entry[which]}, false)
+  : entry.kind === 'titles' ? sendTitles(entry[which], false) : change(entry.id, entry[which], false);
+
+// Title cards: the whole set is sent on every change, which also makes undo a plain "send the previous set".
+async function sendTitles(cards, record = true) {
+  setStatus('saving', 'Saving…');
+  try {
+    const res = await fetch('/api/titles', {method: 'POST', body: JSON.stringify({cards})});
+    const out = await res.json();
+    if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
+    titleData.cards = out.cards;
+    render();
+    if (record) { undoStack.push({kind: 'titles', prev: out.prev, patch: out.cards}); redoStack.length = 0; }
+    setStatus('saved', `Title cards saved at ${clock(new Date())}`);
+    return true;
+  } catch (err) {
+    setStatus('error', `Not saved: ${err.message}`);
+    return false;
+  } finally {
+    refreshButtons();
+  }
+}
+let titleSlot = null, previewTimer = null;
+const titleForm = () => ({
+  text: document.getElementById('t-text').value, subtext: document.getElementById('t-sub').value,
+  seconds: +document.getElementById('t-seconds').value || 3, background: document.getElementById('t-bg').value,
+  films: [...document.querySelectorAll('#t-films input:checked')].map(i => i.value),
+});
+function updateTitlePreview() {
+  const f = titleForm(), q = new URLSearchParams({text: f.text, subtext: f.subtext, background: f.background,
+    film: document.getElementById('film').value, slot: titleSlot});
+  document.getElementById('titlepreview').src = '/api/title_preview?' + q;
+}
+function openTitleEditor(slot) {
+  titleSlot = slot;
+  const info = titleData.slots.find(x => x.slot === slot);
+  const card = titleData.cards[slot] || {text: '', subtext: '', seconds: 3, background: 'black', films: Object.keys(films.films)};
+  document.getElementById('titlehead').textContent = info.label;
+  document.getElementById('t-text').value = card.text;
+  document.getElementById('t-sub').value = card.subtext;
+  document.getElementById('t-seconds').value = card.seconds;
+  document.getElementById('t-bg').value = card.background;
+  document.getElementById('t-films').innerHTML = Object.entries(films.films).map(([k, f]) =>
+    `<label class="check"><input type="checkbox" value="${k}" ${card.films.includes(k) ? 'checked' : ''}> ${esc(f.label)}</label>`).join('');
+  document.getElementById('titledlg').hidden = false;
+  updateTitlePreview();
+  document.getElementById('t-text').focus();
+}
+function closeTitleEditor() { titleSlot = null; document.getElementById('titledlg').hidden = true; }
+function applyTitle() {
+  const card = titleForm(), slot = titleSlot;
+  if (!card.text.trim()) { document.getElementById('t-text').focus(); return; }
+  closeTitleEditor();
+  sendTitles({...titleData.cards, [slot]: card});
+}
+document.getElementById('titledlg').addEventListener('input', () => { clearTimeout(previewTimer); previewTimer = setTimeout(updateTitlePreview, 250); });
+document.getElementById('t-apply').addEventListener('click', applyTitle);
+document.getElementById('t-cancel').addEventListener('click', closeTitleEditor);
+document.getElementById('titledlg').addEventListener('click', ev => { if (ev.target.id === 'titledlg') closeTitleEditor(); });
 
 // Story order: one order per chapter, shared by both films.
 async function sendOrder(payload, record = true) {
@@ -621,6 +738,11 @@ document.getElementById('redo').addEventListener('click', redo);
 document.getElementById('filter').addEventListener('change', () => { cancelEdit(); render(); });
 document.getElementById('chapter').addEventListener('change', () => { cancelEdit(); render(); });
 document.addEventListener('keydown', ev => {
+  if (titleSlot) {
+    if (ev.key === 'Escape') closeTitleEditor();
+    if (ev.key === 'Enter' && ev.target.matches('#titledlg input')) applyTitle();
+    return;
+  }
   if (lightbox) {
     if (ev.key === 'Escape') closeLightbox();
     if (ev.key === 'ArrowLeft') stepLightbox(-1);
@@ -646,6 +768,12 @@ document.addEventListener('keydown', ev => {
 document.addEventListener('click', ev => {
   const b = ev.target.closest('button[data-act]');
   if (!b) return;
+  if (b.dataset.act === 'title-edit') return openTitleEditor(b.dataset.slot);
+  if (b.dataset.act === 'title-delete') {
+    const rest = {...titleData.cards};
+    delete rest[b.dataset.slot];
+    return sendTitles(rest);
+  }
   const id = b.dataset.id, r = results.find(x => x.id === id);
   if (b.dataset.act === 'toggle') return change(id, {[b.dataset.film]: r.editorial.films[b.dataset.film].selected ? 'out' : 'in'});
   if (b.dataset.act === 'move') return stepMove(id, +b.dataset.v);
@@ -706,6 +834,31 @@ def apply_order(payload: dict) -> dict:
     return {"prev": previous, "order": story}
 
 
+def apply_titles(payload: dict) -> dict:
+    """Replace the whole set of title cards (one edit, an undo, or a delete all arrive this way)."""
+    films = list(catalog.load_config("films.json")["films"])
+    with _lock:
+        previous = titles.load()
+        cards = {slot: titles.clean(card, films) for slot, card in payload["cards"].items() if str(card.get("text", "")).strip()}
+        titles.save(cards)
+    return {"prev": previous, "cards": cards}
+
+
+def title_preview(query: dict) -> bytes:
+    """A card drawn by the same code the renderer uses, as a JPEG."""
+    films = list(catalog.load_config("films.json")["films"])
+    card = titles.clean({k: query.get(k, [""])[0] for k in ("text", "subtext", "seconds", "background")}, films)
+    background = None
+    order = process.LAST_SELECTION.get("films", {}).get(query.get("film", [""])[0], {}).get("order", [])
+    if card["background"] == "photo" and order:
+        results = {r["id"]: r for r in json.loads((paths.REPORTS_DIR / "restore_results.json").read_text(encoding="utf-8"))}
+        slot = query.get("slot", ["opening"])[0]
+        chapter = slot.split(":", 1)[1] if slot.startswith("chapter:") else None
+        near = order[-1] if slot == "closing" else next((i for i in order if results[i]["category"] == chapter), order[0])
+        background = cv2.imdecode(np.fromfile(paths.ROOT / results[near]["output"]["processed"], np.uint8), cv2.IMREAD_REDUCED_COLOR_4)
+    return cv2.imencode(".jpg", titles.draw_card(card, 960, 540, background), [cv2.IMWRITE_JPEG_QUALITY, 88])[1].tobytes()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, body: bytes, content_type: str, status: int = 200) -> None:
         self.send_response(status)
@@ -728,6 +881,11 @@ class Handler(BaseHTTPRequestHandler):
                                           "chapter_order": process.LAST_SELECTION.get("chapter_order", []),
                                           "custom_order": process.LAST_SELECTION.get("custom_order", False)}).encode("utf-8"),
                               "application/json")
+        if route == "/api/titles":
+            return self._send(json.dumps({"slots": titles.slots(process.LAST_SELECTION.get("chapter_order", [])),
+                                          "cards": titles.load()}).encode("utf-8"), "application/json")
+        if route == "/api/title_preview":
+            return self._send(title_preview(urllib.parse.parse_qs(self.path.partition("?")[2])), "image/jpeg")
         if route.startswith("/previews/"):
             base = (paths.PREVIEWS_DIR / "photos").resolve()
             target = (base / route[len("/previews/"):]).resolve()
@@ -736,11 +894,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(b"not found", "text/plain", 404)
 
     def do_POST(self):
-        if self.path not in ("/api/override", "/api/order"):
+        if self.path not in ("/api/override", "/api/order", "/api/titles"):
             return self._send(b"not found", "text/plain", 404)
         try:
             payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            result = apply_order(payload) if self.path == "/api/order" else apply_override(payload["id"], payload["patch"])
+            result = (apply_order(payload) if self.path == "/api/order" else apply_titles(payload) if self.path == "/api/titles"
+                      else apply_override(payload["id"], payload["patch"]))
         except Exception as e:
             return self._send(json.dumps({"error": repr(e)}).encode("utf-8"), "application/json", 400)
         self._send(json.dumps(result).encode("utf-8"), "application/json")

@@ -13,7 +13,7 @@ import time
 import cv2
 import numpy as np
 
-from . import catalog, paths, timeline as timeline_mod
+from . import catalog, paths, timeline as timeline_mod, titles
 
 FIT_FRACTION = 0.94      # an upright print is shown whole, slightly inside the frame
 
@@ -65,6 +65,19 @@ class ShotLayer:
         return ((fg.astype(np.uint16) * alpha + self.background.astype(np.uint16) * (255 - alpha) + 127) // 255).astype(np.uint8)
 
 
+class TitleLayer:
+    """A title card: one still frame, drawn once."""
+
+    def __init__(self, shot: dict, width: int, height: int):
+        background = None
+        if shot["card"].get("background") == "photo":
+            background = cv2.imdecode(np.fromfile(paths.ROOT / shot["background_path"], np.uint8), cv2.IMREAD_REDUCED_COLOR_2)
+        self.image = titles.draw_card(shot["card"], width, height, background)
+
+    def frame(self, u: float) -> np.ndarray:
+        return self.image
+
+
 def compose(t: float, tl: dict, layers: dict, width: int, height: int, draft: bool) -> np.ndarray:
     active = [s for s in tl["shots"] if s["visible_start"] <= t < s["visible_end"]]
     for pid in [p for p in layers if p not in {s["id"] for s in active}]:
@@ -74,7 +87,7 @@ def compose(t: float, tl: dict, layers: dict, width: int, height: int, draft: bo
 
     def draw(s):
         if s["id"] not in layers:
-            layers[s["id"]] = ShotLayer(s, width, height, draft)
+            layers[s["id"]] = TitleLayer(s, width, height) if s.get("kind") == "title" else ShotLayer(s, width, height, draft)
         return layers[s["id"]].frame((t - s["visible_start"]) / (s["visible_end"] - s["visible_start"]))
 
     if len(active) == 1:

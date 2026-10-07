@@ -85,5 +85,48 @@
     "3": 1.0,
     "2": 0.9,
     "1": 0.85
+  },
+  "titles": {
+    "_note": "Title cards. The first font file that exists is used; paths here are macOS system fonts with Hebrew.",
+    "fonts": [
+      {
+        "path": "/System/Library/Fonts/Supplemental/NewPeninimMT.ttc",
+        "index": 0
+      },
+      {
+        "path": "/System/Library/Fonts/ArialHB.ttc",
+        "index": 2
+      },
+      {
+        "path": "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+      }
+    ],
+    "fonts_bold": [
+      {
+        "path": "/System/Library/Fonts/Supplemental/NewPeninimMT.ttc",
+        "index": 3
+      },
+      {
+        "path": "/System/Library/Fonts/ArialHB.ttc",
+        "index": 1
+      },
+      {
+        "path": "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+      }
+    ],
+    "main_size": 0.115,
+    "sub_size": 0.05,
+    "text_colour": [
+      243,
+      234,
+      216
+    ],
+    "rule_colour": [
+      216,
+      185,
+      138
+    ],
+    "photo_background_brightness": 0.32,
+    "default_seconds": 3.0
   }
 }

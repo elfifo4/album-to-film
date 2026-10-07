@@ -17,6 +17,7 @@ These cannot be regenerated. Back them up before any cleanup.
 | `editorial/scores.json` | First-pass emotional scores. Without it every photo scores 3 and the selection changes. |
 | `editorial/story_order.json` | The order of photographs set by hand. |
 | `editorial/music.json` and the song file it names (in `assets/`) | The song and the moments pinned to photographs. |
+| `editorial/titles.json` | The title cards. |
 | `renders/final/` | Finished films. |
 
 Photograph ids are derived from the content of each source file, so the saved decisions still match

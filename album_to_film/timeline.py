@@ -12,7 +12,7 @@ import json
 import cv2
 import numpy as np
 
-from . import catalog, music as music_mod, orient, paths
+from . import catalog, music as music_mod, orient, paths, titles as titles_mod
 
 FACES_FILE = paths.REPORTS_DIR / "faces.json"
 
@@ -147,23 +147,40 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
     selection = json.loads((paths.EDITORIAL_DIR / "selection.json").read_text(encoding="utf-8"))[film]
     photos = json.loads((paths.EDITORIAL_DIR / "photos.json").read_text(encoding="utf-8"))
     editorial = {p["id"]: p for p in photos}
-    ids = photo_ids or selection["order"]
+    photo_sequence = photo_ids or selection["order"]
     song = music_mod.for_film(film) if not photo_ids and tempo is None else None
     tempo = tempo or {}
     warnings = []
 
-    chapters = [results[i]["category"] for i in ids]
-    sizes = {c: chapters.count(c) for c in set(chapters)}
+    # Title cards join the sequence as items of their own ("title:<slot>"), at fixed places.
+    cards = {} if photo_ids else titles_mod.for_film(film)
+    is_title = lambda item: item.startswith("title:")
+    ids, chapters = [], []
+    if "opening" in cards and photo_sequence:
+        ids.append("title:opening"), chapters.append(results[photo_sequence[0]]["category"])
+    for n, pid in enumerate(photo_sequence):
+        chapter = results[pid]["category"]
+        if (n == 0 or results[photo_sequence[n - 1]]["category"] != chapter) and f"chapter:{chapter}" in cards:
+            ids.append(f"title:chapter:{chapter}"), chapters.append(chapter)
+        ids.append(pid), chapters.append(chapter)
+    if "closing" in cards and photo_sequence:
+        ids.append("title:closing"), chapters.append(chapters[-1])
+    card_of = lambda item: cards[item[len("title:"):]]
+    sizes = {c: sum(1 for i, ch in zip(ids, chapters) if ch == c and not is_title(i)) for c in set(chapters)}
     preferred, lo, hi = [], [], []
     # In a bridge chapter (a few photos, such as an invitation) the highest-scored photo is the one to
     # read; any others (its cover, an envelope) pass quickly.
     bridge_main = {}
     for pid, chapter in zip(ids, chapters):
-        if sizes[chapter] <= cfg["bridge_chapter_max_photos"]:
+        if not is_title(pid) and sizes[chapter] <= cfg["bridge_chapter_max_photos"]:
             score = editorial.get(pid, {}).get("emotional_score") or 3
             if chapter not in bridge_main or score > bridge_main[chapter][0]:
                 bridge_main[chapter] = (score, pid)
     for pid, chapter in zip(ids, chapters):
+        if is_title(pid):                       # a title card keeps exactly the length you gave it
+            seconds = float(card_of(pid)["seconds"])
+            preferred.append(seconds), lo.append(seconds), hi.append(seconds)
+            continue
         e = editorial.get(pid, {})
         if chapter in bridge_main and not e.get("preferred_duration"):
             if bridge_main[chapter][1] == pid:
@@ -189,7 +206,7 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
 
     offset, fixed, audio, snapped = 0.0, set(), [], 0
     if song:
-        order_index = {results[i]["capture_order"]: k for k, i in enumerate(ids)}
+        order_index = {results[i]["capture_order"]: k for k, i in enumerate(ids) if not is_title(i)}
         anchors = []
         for anchor in song.get("anchors", []):
             if anchor["capture_order"] not in order_index:
@@ -234,12 +251,13 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
         if tempo.get("bpm") or tempo.get("beats"):
             bounds, snapped = snap_to_beats(bounds, lo, hi, chapter_start, tempo, tempo.get("max_snap_seconds", 0.35))
 
-    looks = face_focus(ids, results)
+    looks = face_focus([i for i in ids if not is_title(i)], results)
+    photos_only = [i for i in ids if not is_title(i)]
     canvas_aspect = out_cfg["aspect"][0] / out_cfg["aspect"][1]
     tr = prof["transition"]
     shots = []
     for k, pid in enumerate(ids):
-        r = results[pid]
+        r = None if is_title(pid) else results[pid]
         if k == 0:
             t_in = {"type": "fade_from_black", "seconds": prof["fade_in_seconds"]}
         elif chapter_start[k]:
@@ -248,9 +266,17 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
             t_in = {"type": (editorial.get(pid, {}).get("transition_in") or tr["default"]), "seconds": tr["seconds"]}
         own = bounds[k + 1] - bounds[k]
         t_in["seconds"] = round(min(t_in["seconds"], own * 0.8, (bounds[k] - bounds[k - 1]) * 0.8 if k else own), 3)
+        if r is None:
+            card = card_of(pid)
+            # the blurred-photo style borrows the photograph that follows the card (or precedes a closing card)
+            near = next((i for i in ids[k + 1:] if not is_title(i)), None) or photos_only[-1]
+            shots.append({"id": pid, "kind": "title", "chapter": chapters[k], "card": card,
+                          "background_path": results[near]["output"]["processed"],
+                          "start": round(bounds[k], 4), "end": round(bounds[k + 1], 4), "transition_in": t_in})
+            continue
         style = editorial.get(pid, {}).get("motion_style") or prof["motion"]["styles"][k % len(prof["motion"]["styles"])]
         shots.append({
-            "id": pid, "capture_order": r["capture_order"], "chapter": chapters[k], "path": r["output"]["processed"],
+            "id": pid, "kind": "photo", "capture_order": r["capture_order"], "chapter": chapters[k], "path": r["output"]["processed"],
             "width": r["output"]["width"], "height": r["output"]["height"],
             "start": round(bounds[k], 4), "end": round(bounds[k + 1], 4), "transition_in": t_in,
             "motion": plan_motion(r["output"]["width"], r["output"]["height"], canvas_aspect, style, k % 2 == 1,
@@ -292,9 +318,10 @@ def pilot_ids(film: str, per_chapter: int = 3) -> list[str]:
 
 def run(film: str) -> None:
     t = solve(film)
-    lengths = [s["end"] - s["start"] for s in t["shots"]]
+    lengths = [s["end"] - s["start"] for s in t["shots"] if s["kind"] == "photo"]
+    cards = [s for s in t["shots"] if s["kind"] == "title"]
     m, s = divmod(round(t["duration"]), 60)
-    print(f"timeline {film}: {len(t['shots'])} shots, {m}:{s:02d}, shot length {min(lengths):.1f}-{max(lengths):.1f}s "
+    print(f"timeline {film}: {len(lengths)} photographs" + (f" + {len(cards)} title cards" if cards else "") + f", {m}:{s:02d}, shot length {min(lengths):.1f}-{max(lengths):.1f}s "
           f"(median {np.median(lengths):.1f}s), cuts on beats: {t['boundaries_on_beats']} of {len(t['shots']) - 1}")
     for a in t["audio"]:
         print(f"  music: starts {a['offset']:.1f}s into the song")
