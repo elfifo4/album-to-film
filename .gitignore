@@ -1,22 +1,31 @@
 # This repository is public. It holds code, configuration and documentation only.
-# No family photographs, videos, music, or data derived from them.
+# No photographs, videos, music, or data derived from them.
+#
+# Allow-list: everything at the top level is ignored unless it is named below, so a source folder
+# or an output folder can never be committed by accident, whatever it is called.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/requirements.txt
+!/requirements.lock
+!/album_to_film/
+!/config/
+!/models/
+!/.claude/
 
-# --- Private source material (never commit)
-חתונה וחינה אבא ואמא - 1982/
+# Local settings: where your own photographs live
+/config/project.json
 
-# --- Everything the pipeline generates from the photographs
-work/
-processed/
-previews/
-renders/
-assets/
-catalog/
-reports/
-review/
-editorial/photos*.json
-timeline/*.resolved.json
+# Only the launch configuration from .claude
+/.claude/*
+!/.claude/launch.json
 
-# --- Safety net: no media files anywhere, whatever folder they land in
+# Third-party model files are downloaded, not stored (see README)
+/models/*
+!/models/.gitkeep
+
+# Safety net: no media files anywhere
 *.jpg
 *.jpeg
 *.png
@@ -36,12 +45,6 @@ timeline/*.resolved.json
 *.aac
 *.flac
 
-# --- Third-party model files (downloaded, see README)
-models/*
-!models/.gitkeep
-
-# --- Environment and OS
-.venv/
 __pycache__/
 *.pyc
 .DS_Store

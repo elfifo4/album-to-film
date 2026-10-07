@@ -1,4 +1,4 @@
-"""Capture-order thumbnail index, for cheap human range labelling of henna / invitation / wedding."""
+"""Capture-order thumbnail index, for labelling chapters as a few ranges of numbers."""
 import html
 import json
 
@@ -23,8 +23,8 @@ PAGE = """<!doctype html>
   .flag {{ color: #e0a060; }}
 </style></head><body>
 <h1>Capture order &mdash; {count} photographs</h1>
-<p>The bold number is <code>capture_order</code>. To label events, note where henna ends, where the invitation is,
-and where the wedding starts, then fill the ranges in <code>editorial/event_ranges.json</code>.</p>
+<p>The bold number is <code>capture_order</code>. To label chapters, note the numbers where
+one chapter ends and the next begins, then fill the ranges in <code>editorial/event_ranges.json</code>.</p>
 {sections}
 </body></html>"""
 

@@ -1,0 +1,4 @@
+{
+  "_help": "Copy to config/project.json. source_dir is the read-only folder with your photo captures: absolute, or relative to the project root.",
+  "source_dir": "source"
+}

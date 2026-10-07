@@ -1,10 +1,10 @@
-"""Command line entry point:  .venv/bin/python -m wedding <stage>"""
+"""Command line entry point:  .venv/bin/python -m album_to_film <stage>"""
 import argparse
 import sys
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="wedding", description="1982 henna + wedding photo pipeline")
+    parser = argparse.ArgumentParser(prog="album_to_film", description="From phone captures of printed photographs to short films")
     sub = parser.add_subparsers(dest="stage", required=True)
     sub.add_parser("ingest", help="inventory the source folder into the catalog (read-only)")
     analyze = sub.add_parser("analyze", help="measure every photo and compare original vs edited")

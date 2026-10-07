@@ -1,10 +1,24 @@
 """Project locations. The source folder is read-only: nothing here ever writes into it."""
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE_DIR = ROOT / "חתונה וחינה אבא ואמא - 1982"
-
 CONFIG_DIR = ROOT / "config"
+PROJECT_FILE = CONFIG_DIR / "project.json"   # local to each machine, not in version control
+
+
+def _source_dir() -> Path:
+    if not PROJECT_FILE.exists():
+        raise SystemExit(
+            "config/project.json is missing. Copy config/project.example.json to config/project.json "
+            "and set source_dir to the folder that holds your photo captures."
+        )
+    folder = Path(json.loads(PROJECT_FILE.read_text(encoding="utf-8"))["source_dir"]).expanduser()
+    return folder if folder.is_absolute() else ROOT / folder
+
+
+SOURCE_DIR = _source_dir()
+
 CATALOG_DIR = ROOT / "catalog"
 CATALOG_DB = CATALOG_DIR / "catalog.db"
 LOG_DIR = CATALOG_DIR / "logs"

@@ -61,21 +61,35 @@ def classify_name(filename: str) -> dict:
     return {"role": role, "variant_group": group, "filename_time": when}
 
 
+def capture_time(row) -> datetime | None:
+    """When the capture was taken: from the filename, else EXIF, else the Takeout sidecar."""
+    if row["filename_time"]:
+        return datetime.fromisoformat(row["filename_time"])
+    if row["exif_datetime"]:
+        try:
+            return datetime.strptime(row["exif_datetime"][:19], "%Y:%m:%d %H:%M:%S")
+        except ValueError:
+            pass
+    if row["taken_ts"]:
+        return datetime.fromtimestamp(row["taken_ts"])
+    return None
+
+
 def assign_order_and_segments(con, gap_minutes: float) -> None:
     """Capture order is per variant group; a new segment starts after a long pause between captures."""
-    groups = con.execute(
-        "SELECT variant_group, MIN(filename_time) AS t FROM photos "
-        "WHERE role != 'collage' AND filename_time IS NOT NULL GROUP BY variant_group ORDER BY t"
-    ).fetchall()
+    times: dict[str, datetime] = {}
+    for r in con.execute("SELECT * FROM photos WHERE role != 'collage'"):
+        t = capture_time(r)
+        if t and (r["variant_group"] not in times or t < times[r["variant_group"]]):
+            times[r["variant_group"]] = t
     segment, previous = 0, None
-    for order, g in enumerate(groups, start=1):
-        t = datetime.fromisoformat(g["t"])
+    for order, (group, t) in enumerate(sorted(times.items(), key=lambda kv: (kv[1], kv[0])), start=1):
         if previous is None or (t - previous).total_seconds() > gap_minutes * 60:
             segment += 1
         previous = t
         con.execute(
             "UPDATE photos SET capture_order=?, segment=? WHERE variant_group=?",
-            (order, segment, g["variant_group"]),
+            (order, segment, group),
         )
 
 
@@ -92,7 +106,8 @@ def write_reports(con) -> dict:
 
     segs = con.execute(
         "SELECT segment, COUNT(DISTINCT variant_group) AS photos, MIN(capture_order) AS first_order, "
-        "MAX(capture_order) AS last_order, MIN(filename_time) AS start, MAX(filename_time) AS end "
+        "MAX(capture_order) AS last_order, MIN(COALESCE(filename_time, exif_datetime)) AS start, "
+        "MAX(COALESCE(filename_time, exif_datetime)) AS end "
         "FROM photos WHERE role='original' GROUP BY segment ORDER BY segment"
     ).fetchall()
     buf = io.StringIO()
@@ -106,7 +121,7 @@ def write_reports(con) -> dict:
     ranges = paths.EDITORIAL_DIR / "event_ranges.json"
     if not ranges.exists():
         template = {
-            "_help": "Label ranges of capture_order as henna | invitation | wedding | uncertain. "
+            "_help": "Label ranges of capture_order with chapter names of your choice (or 'uncertain'). "
                      "Split or merge ranges freely; see previews/browse/index.html for the numbers.",
             "ranges": [{"first_order": s["first_order"], "last_order": s["last_order"],
                         "category": None, "note": f"capture segment {s['segment']}"} for s in segs],

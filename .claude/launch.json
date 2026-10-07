@@ -4,7 +4,7 @@
     {
       "name": "review",
       "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "wedding", "review"],
+      "runtimeArgs": ["-m", "album_to_film", "review"],
       "port": 8765
     }
   ]
