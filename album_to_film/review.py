@@ -375,7 +375,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run(port: int = PORT) -> None:
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError:
+        raise SystemExit(f"The review page is already running: open http://127.0.0.1:{port} "
+                         "(or stop the other copy first).")
     print(f"review: http://127.0.0.1:{port}  (Ctrl+C to stop)")
     try:
         server.serve_forever()
