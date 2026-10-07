@@ -155,11 +155,23 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
     chapters = [results[i]["category"] for i in ids]
     sizes = {c: chapters.count(c) for c in set(chapters)}
     preferred, lo, hi = [], [], []
+    # In a bridge chapter (a few photos, such as an invitation) the highest-scored photo is the one to
+    # read; any others (its cover, an envelope) pass quickly.
+    bridge_main = {}
+    for pid, chapter in zip(ids, chapters):
+        if sizes[chapter] <= cfg["bridge_chapter_max_photos"]:
+            score = editorial.get(pid, {}).get("emotional_score") or 3
+            if chapter not in bridge_main or score > bridge_main[chapter][0]:
+                bridge_main[chapter] = (score, pid)
     for pid, chapter in zip(ids, chapters):
         e = editorial.get(pid, {})
-        if sizes[chapter] <= cfg["bridge_chapter_max_photos"] and not e.get("preferred_duration"):
-            seconds = prof["bridge_shot_seconds"]       # long enough to read, whatever the film's pace
-            preferred.append(seconds), lo.append(seconds * 0.9), hi.append(seconds * 1.3)
+        if chapter in bridge_main and not e.get("preferred_duration"):
+            if bridge_main[chapter][1] == pid:
+                seconds = prof["bridge_shot_seconds"]       # long enough to read, whatever the film's pace
+                preferred.append(seconds), lo.append(seconds * 0.9), hi.append(seconds * 1.3)
+            else:
+                preferred.append(prof["nominal_shot_seconds"] * prof["bridge_aside_weight"])
+                lo.append(prof["min_shot_seconds"]), hi.append(prof["max_shot_seconds"])
             continue
         weight = float(e.get("duration_weight") or 1.0) * cfg["emphasis_duration_weight"].get(str(e.get("emotional_score") or 3), 1.0)
         preferred.append(float(e.get("preferred_duration") or prof["nominal_shot_seconds"]) * weight)
