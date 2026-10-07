@@ -1,0 +1,26 @@
+{
+  "_note": "One profile per film. Both select from the same restored photographs. Durations here are editorial targets; the timeline solver later fits real shot lengths (and music) within each film's min/max.",
+  "bridge_chapter_max_photos": 3,
+  "films": {
+    "trailer": {
+      "label": "Trailer",
+      "target_seconds": 75,
+      "nominal_shot_seconds": 2.1,
+      "min_shot_seconds": 1.2,
+      "max_shot_seconds": 3.5,
+      "weights": {"emotional": 1.0, "quality": 0.5},
+      "avoid_similar_shots": true,
+      "motion_intensity": "lively"
+    },
+    "full": {
+      "label": "Full movie",
+      "target_seconds": 300,
+      "nominal_shot_seconds": 4.0,
+      "min_shot_seconds": 2.5,
+      "max_shot_seconds": 7.0,
+      "weights": {"emotional": 1.0, "quality": 0.5},
+      "avoid_similar_shots": false,
+      "motion_intensity": "calm"
+    }
+  }
+}

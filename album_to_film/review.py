@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import paths, process
 
 PORT = 8765
-ALLOWED_KEYS = {"quad", "rotation_cw_deg", "level", "exclude", "note", "reviewed"}
+ALLOWED_KEYS = {"quad", "rotation_cw_deg", "level", "exclude", "note", "reviewed", "emotional", "trailer", "full"}
 _lock = threading.Lock()
 
 PAGE = r"""<!doctype html>
@@ -46,6 +46,23 @@ PAGE = r"""<!doctype html>
   .tabs .n { display:inline-block; min-width:26px; margin-left:8px; padding:1px 8px; border-radius:11px; font-size:12px;
              background:#3a3734; color:var(--ink); font-variant-numeric:tabular-nums; }
   .tabs button[aria-selected="true"] .n { background:var(--accent); color:#111; }
+  #filmctl { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  #filmctl[hidden] { display:none; }
+  #filmsummary { flex-basis:100%; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px; }
+  .chapterhead { grid-column:1 / -1; margin:14px 0 0; font-size:15px; color:var(--accent); }
+  .tile { background:var(--card); border-radius:8px; padding:8px; border:2px solid transparent; }
+  .tile.selected { border-color:var(--accent); }
+  .tile img { display:block; width:100%; height:150px; object-fit:contain; background:#111; border-radius:4px; }
+  .tile .cap { margin:6px 0 2px; font-variant-numeric:tabular-nums; color:var(--dim); }
+  .tile .cap b { color:var(--ink); } .tile .in { color:var(--accent); font-weight:600; }
+  .stars { display:flex; gap:0; }
+  .star { background:none; border:none; padding:2px 3px; min-height:30px; font-size:18px; color:#5a5550; }
+  .star.on { color:#f0c040; } .star:hover { background:none; color:#ffe08a; }
+  .seg { display:flex; margin-top:4px; }
+  .seg button { flex:1; border-radius:0; min-height:32px; padding:4px 0; }
+  .seg button:first-child { border-radius:6px 0 0 6px; } .seg button:last-child { border-radius:0 6px 6px 0; }
+  .seg button.active { background:var(--accent); color:#111; font-weight:600; border-color:var(--accent); }
   section.leaving { opacity:0; transform:translateX(24px); transition:opacity .25s, transform .25s; }
   @media (prefers-reduced-motion: reduce) { section.leaving { transition:none; } }
   #status { margin-left:auto; display:flex; align-items:center; gap:8px; font-weight:600; }
@@ -96,13 +113,16 @@ PAGE = r"""<!doctype html>
 The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: the outline appears with four handles, drag any of them
 (a magnifier shows the exact spot; arrow keys nudge a focused handle), then press <b>Apply corners</b> in the bar at the top. When a photo is
 right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review</b> to <b>Done</b>.
-<b>Duplicates</b> lists prints that were photographed more than once: keep one of each group and exclude the rest. There is no Save button: every change is written to
+<b>Duplicates</b> lists prints that were photographed more than once: keep one of each group and exclude the rest.
+<b>Films</b> shows which photographs each film uses: change the stars to re-rank, or force a photo <b>In</b> or <b>Out</b>
+(<b>Auto</b> lets the ranking decide). There is no Save button: every change is written to
 <code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
 <div class="top">
   <div class="tabs" role="tablist">
     <button role="tab" id="tab-todo" data-tab="todo" aria-selected="true">To review<span class="n" id="n-todo">0</span></button>
     <button role="tab" id="tab-done" data-tab="done" aria-selected="false">Done<span class="n" id="n-done">0</span></button>
     <button role="tab" id="tab-dups" data-tab="dups" aria-selected="false">Duplicates<span class="n" id="n-dups">0</span></button>
+    <button role="tab" id="tab-films" data-tab="films" aria-selected="false">Films</button>
   </div>
   <button id="undo" disabled>Undo</button>
   <button id="redo" disabled>Redo</button>
@@ -115,15 +135,22 @@ right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review
     <button data-act="cancel">Cancel</button>
     <span id="edithint">Drag a corner, then Apply (Enter). Esc cancels.</span>
   </span>
+  <span id="filmctl" hidden>
+    <label>Film <select id="film"></select></label>
+    <label>Show <select id="filmshow"><option value="selected">In the film</option>
+      <option value="rest">Not in the film</option><option value="all">All photos</option></select></label>
+    <span id="filmsummary"></span>
+  </span>
   <span id="count"></span>
   <span id="status" class="saved" role="status" aria-live="polite">Nothing changed yet</span>
 </div>
 <div id="list"></div>
 <div id="loupe" aria-hidden="true"></div>
 <script>
-const names = {quad:'corners', rotation_cw_deg:'rotation', level:'enhancement', exclude:'exclude', note:'note', reviewed:'looks good'};
+const names = {quad:'corners', rotation_cw_deg:'rotation', level:'enhancement', exclude:'exclude', note:'note', reviewed:'looks good', emotional:'score', trailer:'trailer pick', full:'full movie pick'};
 const savedAt = {}, undoStack = [], redoStack = [];
 let stamp = Date.now(), results = [];
+let films = {films: {}, chapter_order: []};
 let tab = 'todo';      // which tab is open: 'todo' (To review) or 'done'
 let editing = null;   // {id, pts: four [x, y] fractions of the capture, history: [{i, before}]}
 let drag = null;
@@ -186,11 +213,47 @@ function showTab(name) {
   tab = name;
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', b.dataset.tab === tab);
   document.getElementById('showwrap').hidden = tab !== 'done';
+  document.getElementById('filmctl').hidden = tab !== 'films';
   render();
   scrollTo({top: 0});
 }
 // Redraws the list for the current filter. A photo you just settled stays visible until the next redraw.
+function tile(r) {
+  const film = document.getElementById('film').value, e = r.editorial, f = e.films[film], state = f.pin || 'auto';
+  const stars = [1, 2, 3, 4, 5].map(v => `<button class="star ${v <= e.emotional ? 'on' : ''}" data-act="star" data-id="${r.id}"
+      data-v="${v}" aria-label="Score ${v} of 5">★</button>`).join('');
+  const seg = [['in', 'In'], ['auto', 'Auto'], ['out', 'Out']].map(([k, label]) =>
+    `<button class="${state === k ? 'active' : ''}" data-act="pick" data-id="${r.id}" data-v="${k}">${label}</button>`).join('');
+  return `<div class="tile ${f.selected ? 'selected' : ''}" id="t-${r.id}">
+    <a href="${img(r.id, 'light')}" target="_blank"><img loading="lazy" src="${img(r.id, 'light')}" alt=""></a>
+    <div class="cap"><b>#${r.capture_order}</b>${f.selected ? ' · <span class="in">in the film</span>' : ''}</div>
+    <div class="stars" title="Emotional score (${e.emotional_source})">${stars}</div><div class="seg">${seg}</div></div>`;
+}
+function renderFilms() {
+  const film = document.getElementById('film').value, show = document.getElementById('filmshow').value;
+  const c = document.getElementById('chapter').value, order = films.chapter_order, info = films.films[film];
+  let list = results.filter(r => r.editorial && (!c || r.category === c));
+  if (show === 'selected') list = list.filter(r => r.editorial.films[film].selected);
+  if (show === 'rest') list = list.filter(r => !r.editorial.films[film].selected);
+  list.sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category) || a.capture_order - b.capture_order);
+  let html = '', current = null;
+  for (const r of list) {
+    if (r.category !== current) { current = r.category; html += `<h2 class="chapterhead">${esc(current)}</h2>`; }
+    html += tile(r);
+  }
+  document.getElementById('list').innerHTML = html ? `<div class="grid">${html}</div>` : '<p id="empty">Nothing to show for this filter.</p>';
+  const t = info.estimated_seconds, mmss = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+  document.getElementById('filmsummary').textContent = `${info.label}: ${info.count} photographs, about ${mmss} ` +
+    `(target ${Math.floor(info.target_seconds / 60)}:${String(info.target_seconds % 60).padStart(2, '0')}) · ` +
+    order.map(ch => `${ch} ${info.by_chapter[ch] || 0}`).join(' · ');
+  document.getElementById('count').textContent = `${list.length} shown`;
+}
+async function refreshAll() {
+  results = await (await fetch('/api/results')).json();
+  films = await (await fetch('/api/films')).json();
+}
 function render() {
+  if (tab === 'films') return renderFilms();
   const shown = results.filter(visible);
   if (tab === 'dups') shown.sort((a, b) => a.duplicate.group - b.duplicate.group || a.capture_order - b.capture_order);
   document.getElementById('list').innerHTML = shown.map(card).join('') ||
@@ -198,6 +261,7 @@ function render() {
   updateCount();
 }
 function updateCount() {
+  if (tab === 'films') return;
   const shown = document.querySelectorAll('#list section:not(.leaving)').length, todo = results.filter(r => r.needs_review).length;
   document.getElementById('n-todo').textContent = todo;
   document.getElementById('n-done').textContent = results.length - todo;
@@ -227,8 +291,9 @@ function refreshButtons() {
 
 async function load() {
   setStatus('saving', 'Loading…');
-  results = await (await fetch('/api/results')).json();
+  await refreshAll();
   stamp = Date.now();
+  document.getElementById('film').innerHTML = Object.entries(films.films).map(([k, f]) => `<option value="${k}">${esc(f.label)}</option>`).join('');
   const chapters = [...new Set(results.map(r => r.category))];
   document.getElementById('chapter').innerHTML = '<option value="">All</option>' +
     chapters.map(c => `<option>${esc(c)}</option>`).join('');
@@ -250,6 +315,13 @@ async function change(id, patch, record = true) {
     if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
     results[i] = out;
     savedAt[id] = new Date();
+    if (tab === 'films') {
+      await refreshAll();
+      render();
+      if (record) { undoStack.push({id, patch, prev}); redoStack.length = 0; }
+      setStatus('saved', `Saved at ${clock(savedAt[id])}`);
+      return true;
+    }
     stamp = Date.now();
     let moved = '';
     if (section && !visible(out)) {          // settled (or reopened): slide it out of this tab
@@ -395,6 +467,8 @@ async function redo() {
   document.getElementById('s-' + entry.id)?.scrollIntoView({block: 'nearest'});
 }
 for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+document.getElementById('film').addEventListener('change', render);
+document.getElementById('filmshow').addEventListener('change', render);
 document.getElementById('undo').addEventListener('click', undo);
 document.getElementById('redo').addEventListener('click', redo);
 document.getElementById('filter').addEventListener('change', () => { cancelEdit(); render(); });
@@ -420,6 +494,8 @@ document.addEventListener('click', ev => {
   const b = ev.target.closest('button[data-act]');
   if (!b) return;
   const id = b.dataset.id, r = results.find(x => x.id === id);
+  if (b.dataset.act === 'star') return change(id, {emotional: +b.dataset.v});
+  if (b.dataset.act === 'pick') return change(id, {[document.getElementById('film').value]: b.dataset.v === 'auto' ? null : b.dataset.v});
   if (b.dataset.act === 'corners') return startEdit(id);
   if (b.dataset.act === 'apply') return applyEdit();
   if (b.dataset.act === 'cancel') return cancelEdit();
@@ -477,6 +553,10 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 results = process.run("all", quiet=True)
             return self._send(json.dumps(results).encode("utf-8"), "application/json")
+        if route == "/api/films":
+            return self._send(json.dumps({"films": process.LAST_SELECTION.get("films", {}),
+                                          "chapter_order": process.LAST_SELECTION.get("chapter_order", [])}).encode("utf-8"),
+                              "application/json")
         if route.startswith("/previews/"):
             base = (paths.PREVIEWS_DIR / "photos").resolve()
             target = (base / route[len("/previews/"):]).resolve()

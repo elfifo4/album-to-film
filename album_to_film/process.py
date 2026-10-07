@@ -173,9 +173,11 @@ def write_editorial(results: list[dict], metrics: dict, events: dict, filename: 
             "chapter": category, "capture_order": r["capture_order"],
             "crop_confidence": r["detect"]["confidence"], "orientation_confidence": r["orientation"]["confidence"],
             "sharpness": metrics.get(r["id"], {}).get("sharpness"),
-            "quality_score": None, "emotional_score": None, "uniqueness_score": None,
+            "quality_score": (r.get("editorial") or {}).get("quality"),
+            "emotional_score": (r.get("editorial") or {}).get("emotional"), "uniqueness_score": None,
             "duplicate_group": (r.get("duplicate") or {}).get("group"),
-            "use_in_trailer": None, "use_in_full_movie": None, "excluded": bool(o.get("exclude")),
+            "use_in": {name: f["selected"] for name, f in ((r.get("editorial") or {}).get("films") or {}).items()},
+            "excluded": bool(o.get("exclude")),
             "preferred_duration": None, "min_duration": None, "max_duration": None, "duration_weight": 1.0,
             "motion_style": None, "transition_in": None, "transition_out": None, "crop_mode": None,
             "flags": r["flags"], "notes": o.get("note", ""), "manual_override": o,
@@ -214,6 +216,8 @@ def process_one(con, photo_id: str, cfg: dict, ecfg: dict, overrides: dict, even
     return result
 
 
+LAST_SELECTION: dict = {}     # film summaries from the most recent run, for the review page
+
 REVIEW_FLAGS = {"no_print_found", "crop_not_applied_low_confidence", "uncertain_orientation",
                 "faces_disagree_with_your_edit", "multiple_regions", "enhancement_may_hurt", "no_paper_visible"}
 
@@ -250,7 +254,8 @@ def run(scope: str = "all", quiet: bool = False) -> list[dict]:
         raise SystemExit(f"Only {free_gb:.1f} GB free; refusing to start (minimum {cfg['restore']['min_free_disk_gb']} GB).")
 
     dup_file = paths.REPORTS_DIR / "duplicates.json"
-    duplicates = json.loads(dup_file.read_text(encoding="utf-8"))["by_photo"] if dup_file.exists() else {}
+    dup_report = json.loads(dup_file.read_text(encoding="utf-8")) if dup_file.exists() else {}
+    duplicates = dup_report.get("by_photo", {})
     results, errors, started = [], [], time.time()
     for n, photo_id in enumerate(ids, 1):
         try:
@@ -266,6 +271,15 @@ def run(scope: str = "all", quiet: bool = False) -> list[dict]:
             print(f"  restore {n}/{len(ids)}  ({time.time() - started:.0f}s)")
     metrics = {r["photo_id"]: json.loads(r["data"]) for r in con.execute("SELECT * FROM metrics")}
     con.close()
+
+    global LAST_SELECTION
+    from . import editorial
+    LAST_SELECTION = editorial.build(results, metrics, events, dup_report)
+    for r in results:
+        r["editorial"] = LAST_SELECTION["photos"].get(r["id"])
+    if scope == "all":
+        catalog.write_text_atomic(paths.EDITORIAL_DIR / "selection.json", json.dumps(
+            {name: f for name, f in LAST_SELECTION["films"].items()}, indent=2, ensure_ascii=False))
 
     suffix = "" if scope == "all" else ".pilot"
     catalog.write_text_atomic(paths.REPORTS_DIR / f"restore_results{suffix}.json", json.dumps(results, indent=2, ensure_ascii=False))

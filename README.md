@@ -63,8 +63,8 @@ reports, review decisions, music and video cannot be committed by accident, what
 | `restore` | The same restoration for every photograph, resumable | done |
 | `review` | Local review page with a "needs review" queue: click four corners with a magnifier, rotate, choose enhancement, exclude, note; with undo | done |
 | `dedupe` | Groups repeated captures of the same print and tells them apart from similar shots of one scene (flag only, nothing deleted) | done |
-| editorial | Scores and separate selections for the trailer and the full movie | next |
-| timeline | Shot durations with min/max/weight, refined (not dictated) by the music's beats | planned |
+| editorial | Per-photo scores and a separate selection for each film, from the profiles in `config/films.json`; adjustable in the review page's Films tab (stars, In / Auto / Out) | done |
+| timeline | Shot durations with min/max/weight, refined (not dictated) by the music's beats | next |
 | render | Ken Burns motion and transitions, drawn frame by frame and encoded with FFmpeg | planned |
 
 ### Finding the print
