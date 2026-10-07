@@ -76,6 +76,16 @@ def evidence_trim(paper_warped: np.ndarray, margin: float, cfg: dict) -> dict:
     return trims
 
 
+def trimmed_quad(quad: np.ndarray, size: tuple[int, int], trims: dict) -> np.ndarray:
+    """Corners, on the capture, of the crop that remains after the per-side trims."""
+    w, h = size
+    full = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
+    back = cv2.getPerspectiveTransform(full, quad.astype(np.float32))
+    l, r, t, b = (int(trims[k] * n) for k, n in (("left", w), ("right", w), ("top", h), ("bottom", h)))
+    kept = np.array([[[l, t], [w - 1 - r, t], [w - 1 - r, h - 1 - b], [l, h - 1 - b]]], np.float32)
+    return cv2.perspectiveTransform(kept, back)[0]
+
+
 def apply_trim(image: np.ndarray, trims: dict) -> np.ndarray:
     h, w = image.shape[:2]
     return image[int(trims["top"] * h): h - int(trims["bottom"] * h), int(trims["left"] * w): w - int(trims["right"] * w)]

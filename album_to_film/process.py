@@ -141,6 +141,25 @@ def process_file(row: dict, variant: dict | None, cfg: dict, ecfg: dict, overrid
     }
 
 
+def edit_quad_fraction(result: dict, row: dict) -> list:
+    """Starting corners for hand editing, as fractions of the capture: the crop actually in use.
+
+    For an automatic crop that is the detected outline after its trims, so adjusting one corner and
+    applying does not bring the paper edge back on the other sides.
+    """
+    d = result["detect"]
+    if d["status"] == "manual":
+        return d["quad_fraction"]
+    if d["status"] != "found":
+        return [[0.04, 0.04], [0.96, 0.04], [0.96, 0.96], [0.04, 0.96]]
+    turned = (row["exif_orientation"] or 1) >= 5
+    W, H = (row["height"], row["width"]) if turned else (row["width"], row["height"])
+    quad = np.array(d["quad_full"], np.float32)
+    if d["cropped"]:
+        quad = restore.trimmed_quad(quad, restore.target_size(quad), d["trims"])
+    return np.clip(quad / [W, H], 0, 1).round(5).tolist()
+
+
 def write_editorial(results: list[dict], metrics: dict, events: dict, filename: str) -> None:
     """The shared per-photo editorial records that both films will select from."""
     records = []
@@ -177,6 +196,7 @@ def process_one(con, photo_id: str, cfg: dict, ecfg: dict, overrides: dict, even
     if cached and catalog.is_done(con, photo_id, "restore", fp):
         result = json.loads(cached["data"])
         result["override"] = override
+        result["detect"]["edit_quad_fraction"] = edit_quad_fraction(result, row)
         return result
     t0 = time.time()
     result = process_file(row, variant, cfg, ecfg, override)
@@ -185,6 +205,7 @@ def process_one(con, photo_id: str, cfg: dict, ecfg: dict, overrides: dict, even
     con.execute("INSERT OR REPLACE INTO restore_results VALUES (?,?)", (photo_id, json.dumps(result)))
     catalog.mark(con, photo_id, "restore", fp)
     con.commit()
+    result["detect"]["edit_quad_fraction"] = edit_quad_fraction(result, row)
     if not quiet:
         d, o = result["detect"], result["orientation"]
         print(f"  #{row['capture_order']:>3} {row['filename']:<30} crop {d['level']:<6} {d['confidence']:.2f}  "
