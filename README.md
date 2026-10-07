@@ -136,3 +136,8 @@ Exact versions are in `requirements.lock`.
 | source folder, `processed/`, `previews/`, `renders/`, `assets/` | photographs, restored images, video, music | no |
 | `catalog/`, `reports/`, `review/`, `work/` | catalog, reports and review decisions derived from the photographs | no |
 | `models/` | downloaded model files | no |
+
+## License
+
+The code is released under the [MIT License](LICENSE). The license covers the code in this repository
+only; the family photographs are not part of it and are not licensed for any use.
