@@ -108,6 +108,7 @@ PAGE = r"""<!doctype html>
   .rprogress { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
   .rprogress progress { flex:1 1 180px; height:14px; accent-color:var(--accent); }
   .rnote { color:var(--dim); font-size:13px; }
+  .rhint { display:block; margin-bottom:8px; padding:8px 10px; border-radius:6px; background:#4a3f1a; border:1px solid var(--medium); color:var(--ink); }
   .fresh { background:var(--high); } .stale { background:var(--medium); } .none { background:#5a5550; color:#fff; }
   #lightbox { position:fixed; inset:0; z-index:50; background:#000e; display:flex; align-items:center; justify-content:center; }
   #lightbox[hidden] { display:none; }
@@ -425,7 +426,9 @@ function drawRender() {
                   cur.stale ? ['stale', 'Changed since this render'] : ['fresh', 'Up to date'];
     card.querySelector('h2').innerHTML = `${esc(f.label)} <span class="tag ${state[0]}">${state[1]}</span>`;
     const anchor = s.anchors.map(a => `song ${mmss(a.song_time)} lands on #${a.capture_order} at ${mmss(a.film_time)}`).join('; ');
-    card.querySelector('.rsummary').innerHTML = `Now: ${mmss(s.duration)} · ${s.photos} photographs` +
+    const hint = state[0] === 'stale' ? '<span class="rhint">This video was made before your latest changes. Press Quick preview or Render 1080p to include them.</span>'
+               : state[0] === 'none' ? '<span class="rhint">Press Quick preview or Render 1080p to make this film.</span>' : '';
+    card.querySelector('.rsummary').innerHTML = hint + `Now: ${mmss(s.duration)} · ${s.photos} photographs` +
       (s.titles ? ` · ${s.titles} title card${s.titles > 1 ? 's' : ''}` : '') + ` · typical shot ${s.typical_shot}s` +
       (s.music ? '' : ' · no music') + (anchor ? `<br>${esc(anchor)}` : '') +
       s.warnings.map(w => `<span class="flag">${esc(w)}</span>`).join('');
