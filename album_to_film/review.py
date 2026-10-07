@@ -35,9 +35,19 @@ PAGE = r"""<!doctype html>
   @keyframes spin { to { transform:rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spin { animation-duration:3s; } }
   .top { position:sticky; top:0; z-index:5; display:flex; flex-wrap:wrap; gap:8px; align-items:center;
-         background:var(--bg); padding:10px 0; margin-bottom:14px; border-bottom:1px solid var(--line); }
+         background:var(--bg); padding:6px 0 10px; margin-bottom:14px; }
   .top button:disabled { opacity:.4; cursor:default; }
   #count { color:var(--dim); }
+  .tabs { display:flex; gap:4px; flex-basis:100%; border-bottom:1px solid var(--line); }
+  .tabs button { background:none; border:none; border-bottom:3px solid transparent; border-radius:6px 6px 0 0;
+                 padding:10px 18px; font-size:15px; font-weight:600; color:var(--dim); min-height:44px; }
+  .tabs button:hover { background:#2a2826; color:var(--ink); }
+  .tabs button[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--accent); background:#2a2826; }
+  .tabs .n { display:inline-block; min-width:26px; margin-left:8px; padding:1px 8px; border-radius:11px; font-size:12px;
+             background:#3a3734; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .tabs button[aria-selected="true"] .n { background:var(--accent); color:#111; }
+  section.leaving { opacity:0; transform:translateX(24px); transition:opacity .25s, transform .25s; }
+  @media (prefers-reduced-motion: reduce) { section.leaving { transition:none; } }
   #status { margin-left:auto; display:flex; align-items:center; gap:8px; font-weight:600; }
   #status.saved { color:var(--high); } #status.error { color:var(--low); } #status.saving { color:var(--accent); }
   .shots { display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:10px; align-items:start; }
@@ -84,15 +94,19 @@ PAGE = r"""<!doctype html>
 <h1>Photo review</h1>
 <p class="lead">Each row shows the capture with the outline used, then geometry only, <b>light</b> and <b>standard</b>.
 The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: the outline appears with four handles, drag any of them
-(a magnifier shows the exact spot; arrow keys nudge a focused handle), then press <b>Apply corners</b> in the bar at the top. Tick
-<b>Looks good</b> to clear a photo from the "Needs review" list. There is no Save button: every change is written to
+(a magnifier shows the exact spot; arrow keys nudge a focused handle), then press <b>Apply corners</b> in the bar at the top. When a photo is
+right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review</b> to <b>Done</b>. There is no Save button: every change is written to
 <code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
 <div class="top">
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-todo" data-tab="todo" aria-selected="true">To review<span class="n" id="n-todo">0</span></button>
+    <button role="tab" id="tab-done" data-tab="done" aria-selected="false">Done<span class="n" id="n-done">0</span></button>
+  </div>
   <button id="undo" disabled>Undo</button>
   <button id="redo" disabled>Redo</button>
-  <label>Show <select id="filter">
-    <option value="needs">Needs review</option><option value="all">All photos</option>
-    <option value="mine">Changed by you</option><option value="excluded">Excluded</option></select></label>
+  <label id="showwrap" hidden>Show <select id="filter">
+    <option value="all">All done</option><option value="mine">Changed by you</option>
+    <option value="excluded">Excluded</option></select></label>
   <label>Chapter <select id="chapter"><option value="">All</option></select></label>
   <span id="editctl" hidden>
     <button class="primary" data-act="apply" id="apply" disabled>Apply corners</button>
@@ -108,6 +122,7 @@ The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: t
 const names = {quad:'corners', rotation_cw_deg:'rotation', level:'enhancement', exclude:'exclude', note:'note', reviewed:'looks good'};
 const savedAt = {}, undoStack = [], redoStack = [];
 let stamp = Date.now(), results = [];
+let tab = 'todo';      // which tab is open: 'todo' (To review) or 'done'
 let editing = null;   // {id, pts: four [x, y] fractions of the capture, history: [{i, before}]}
 let drag = null;
 const img = (id, kind) => `/previews/${id}_${kind}.jpg?v=${stamp}`;
@@ -156,21 +171,33 @@ function card(r) {
 function visible(r) {
   const f = document.getElementById('filter').value, c = document.getElementById('chapter').value, ov = r.override || {};
   if (c && r.category !== c) return false;
-  if (f === 'needs') return r.needs_review;
+  if (tab === 'todo') return r.needs_review;
+  if (r.needs_review) return false;
   if (f === 'mine') return Object.keys(ov).length > 0;
   if (f === 'excluded') return !!ov.exclude;
   return true;
+}
+function showTab(name) {
+  cancelEdit();
+  tab = name;
+  for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', b.dataset.tab === tab);
+  document.getElementById('showwrap').hidden = tab !== 'done';
+  render();
+  scrollTo({top: 0});
 }
 // Redraws the list for the current filter. A photo you just settled stays visible until the next redraw.
 function render() {
   const shown = results.filter(visible);
   document.getElementById('list').innerHTML = shown.map(card).join('') ||
-    '<p id="empty">Nothing to show for this filter.</p>';
+    `<p id="empty">${tab === 'todo' ? 'Nothing left to review here.' : 'Nothing to show for this filter.'}</p>`;
   updateCount();
 }
 function updateCount() {
-  const shown = document.querySelectorAll('#list section').length, todo = results.filter(r => r.needs_review).length;
-  document.getElementById('count').textContent = `${shown} shown · ${todo} of ${results.length} need review`;
+  const shown = document.querySelectorAll('#list section:not(.leaving)').length, todo = results.filter(r => r.needs_review).length;
+  document.getElementById('n-todo').textContent = todo;
+  document.getElementById('n-done').textContent = results.length - todo;
+  document.getElementById('count').textContent = `${shown} shown`;
+  if (!shown && !document.getElementById('empty')) render();
 }
 function setStatus(kind, text) {
   const el = document.getElementById('status');
@@ -197,8 +224,7 @@ async function load() {
   const chapters = [...new Set(results.map(r => r.category))];
   document.getElementById('chapter').innerHTML = '<option value="">All</option>' +
     chapters.map(c => `<option>${esc(c)}</option>`).join('');
-  if (!results.some(r => r.needs_review)) document.getElementById('filter').value = 'all';
-  render();
+  showTab(results.some(r => r.needs_review) ? 'todo' : 'done');
   setStatus('saved', 'Nothing changed yet');
 }
 
@@ -207,9 +233,8 @@ async function change(id, patch, record = true) {
   const i = results.findIndex(x => x.id === id), ov = results[i].override || {};
   const prev = {};
   for (const k in patch) prev[k] = k in ov ? ov[k] : null;
-  let section = document.getElementById('s-' + id);
-  if (!section) { document.getElementById('filter').value = 'all'; render(); section = document.getElementById('s-' + id); }
-  section.classList.add('busy');
+  const section = document.getElementById('s-' + id);     // absent when the photo lives in the other tab
+  if (section) section.classList.add('busy');
   setStatus('saving', 'Saving…');
   try {
     const res = await fetch('/api/override', {method: 'POST', body: JSON.stringify({id, patch})});
@@ -218,13 +243,23 @@ async function change(id, patch, record = true) {
     results[i] = out;
     savedAt[id] = new Date();
     stamp = Date.now();
-    section.outerHTML = card(out);
+    let moved = '';
+    if (section && !visible(out)) {          // settled (or reopened): slide it out of this tab
+      moved = out.needs_review ? ' · moved to To review' : ' · moved to Done';
+      section.classList.remove('busy');
+      section.classList.add('leaving');
+      setTimeout(() => { section.remove(); updateCount(); }, 260);
+    } else if (section) {
+      section.outerHTML = card(out);
+    } else if (visible(out)) {
+      render();
+    }
     if (record) { undoStack.push({id, patch, prev}); redoStack.length = 0; }
-    setStatus('saved', `Saved to overrides.json at ${clock(savedAt[id])}`);
+    setStatus('saved', `Saved at ${clock(savedAt[id])}${moved}`);
     updateCount();
     return true;
   } catch (err) {
-    section.classList.remove('busy');
+    if (section) section.classList.remove('busy');
     setStatus('error', `Not saved: ${err.message}`);
     return false;
   } finally {
@@ -342,15 +377,16 @@ async function undo() {
   if (!entry) return;
   if (await change(entry.id, entry.prev, false)) redoStack.push(entry); else undoStack.push(entry);
   refreshButtons();
-  document.getElementById('s-' + entry.id).scrollIntoView({block: 'nearest'});
+  document.getElementById('s-' + entry.id)?.scrollIntoView({block: 'nearest'});
 }
 async function redo() {
   const entry = redoStack.pop();
   if (!entry) return;
   if (await change(entry.id, entry.patch, false)) undoStack.push(entry); else redoStack.push(entry);
   refreshButtons();
-  document.getElementById('s-' + entry.id).scrollIntoView({block: 'nearest'});
+  document.getElementById('s-' + entry.id)?.scrollIntoView({block: 'nearest'});
 }
+for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
 document.getElementById('undo').addEventListener('click', undo);
 document.getElementById('redo').addEventListener('click', redo);
 document.getElementById('filter').addEventListener('change', () => { cancelEdit(); render(); });

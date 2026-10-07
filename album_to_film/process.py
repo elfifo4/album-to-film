@@ -218,11 +218,16 @@ REVIEW_FLAGS = {"no_print_found", "crop_not_applied_low_confidence", "uncertain_
 
 
 def needs_review(result: dict) -> bool:
-    """True while the automatic result is doubtful and you have not settled it."""
+    """True until you settle the photo with "Looks good" or "Exclude".
+
+    A photo is in the queue when the automatic result is doubtful, or when you changed its corners,
+    rotation or enhancement: fixing something does not by itself take it out of the queue.
+    """
     o = result.get("override", {})
     if o.get("exclude") or o.get("reviewed"):
         return False
-    return (result["detect"]["level"] in ("low", "medium") or result["orientation"]["confidence"] == "low"
+    touched = any(k in o for k in ("quad", "rotation_cw_deg", "level"))
+    return (touched or result["detect"]["level"] in ("low", "medium") or result["orientation"]["confidence"] == "low"
             or bool(REVIEW_FLAGS & set(result["flags"])))
 
 
