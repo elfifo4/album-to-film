@@ -1,0 +1,31 @@
+{
+  "_note": "Every strength is capped. Levels: none | light (capture correction + levels) | standard (+ cast, local contrast, sharpening).",
+  "default_level": "light",
+  "paper_reference": {
+    "_note": "The surrounding paper is an estimate of the lighting, not guaranteed neutral white.",
+    "white_balance_strength": 0.5,
+    "max_channel_gain": 1.08,
+    "flat_field_strength": 0.5,
+    "max_flat_field_gain": 1.1
+  },
+  "levels": {
+    "black_percentile": 0.5,
+    "white_percentile": 99.5,
+    "max_gain": 1.25,
+    "black_strength": 0.5,
+    "white_strength": 0.7,
+    "white_target": 250
+  },
+  "cast_correction_strength": 0.4,
+  "clahe": {
+    "clip_limit": 1.5,
+    "blend": 0.25
+  },
+  "denoise_strength": 3,
+  "unsharp": {
+    "radius": 1.2,
+    "amount": 0.3
+  },
+  "max_cast_gain": 1.1,
+  "max_added_clipping": 0.01
+}

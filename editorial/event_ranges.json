@@ -1,0 +1,10 @@
+{
+  "_help": "Ranges of capture_order labelled henna | invitation | wedding | uncertain. Labelled by Elad on 2026-10-06. Per-photo exceptions go in 'exceptions'.",
+  "ranges": [
+    {"first_order": 1,   "last_order": 126, "category": "wedding"},
+    {"first_order": 127, "last_order": 149, "category": "henna"},
+    {"first_order": 150, "last_order": 152, "category": "invitation"},
+    {"first_order": 153, "last_order": 207, "category": "henna"}
+  ],
+  "exceptions": []
+}

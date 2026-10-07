@@ -1,0 +1,11 @@
+# Direct dependencies only. Exact resolved versions are recorded in requirements.lock.
+# Install into the project-local environment:  .venv/bin/python -m pip install -r requirements.txt
+
+# Computer vision: decoding, contours, Hough lines, perspective warp, CLAHE, denoise, face detection.
+opencv-python-headless>=4.10
+
+# Array maths behind OpenCV: statistics, colour maths, perceptual hashing.
+numpy>=2.1
+
+# EXIF reading, ICC-safe JPEG writing, title-card text.
+Pillow>=11

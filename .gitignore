@@ -1,0 +1,47 @@
+# This repository is public. It holds code, configuration and documentation only.
+# No family photographs, videos, music, or data derived from them.
+
+# --- Private source material (never commit)
+חתונה וחינה אבא ואמא - 1982/
+
+# --- Everything the pipeline generates from the photographs
+work/
+processed/
+previews/
+renders/
+assets/
+catalog/
+reports/
+review/
+editorial/photos*.json
+timeline/*.resolved.json
+
+# --- Safety net: no media files anywhere, whatever folder they land in
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.tif
+*.tiff
+*.webp
+*.gif
+*.mp4
+*.mov
+*.m4v
+*.mkv
+*.avi
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+
+# --- Third-party model files (downloaded, see README)
+models/*
+!models/.gitkeep
+
+# --- Environment and OS
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

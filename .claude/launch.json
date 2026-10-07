@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "review",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "wedding", "review"],
+      "port": 8765
+    }
+  ]
+}
