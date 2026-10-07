@@ -9,6 +9,36 @@ import json
 from . import catalog, paths
 
 SCORES_FILE = paths.EDITORIAL_DIR / "scores.json"
+ORDER_FILE = paths.EDITORIAL_DIR / "story_order.json"     # {chapter: [photo ids]} — the order you set by hand
+
+
+def load_story_order() -> dict:
+    return json.loads(ORDER_FILE.read_text(encoding="utf-8")) if ORDER_FILE.exists() else {}
+
+
+def save_story_order(story: dict) -> None:
+    catalog.write_text_atomic(ORDER_FILE, json.dumps(story, indent=1))
+
+
+def chapter_sequence(candidates: list[dict], chapter: str, story: dict) -> list[str]:
+    """Photo ids of one chapter in story order: your order where you set one, capture order otherwise."""
+    ids = [r["id"] for r in sorted((r for r in candidates if r["category"] == chapter), key=lambda r: r["capture_order"])]
+    listed = [i for i in story.get(chapter, []) if i in set(ids)]
+    return listed + [i for i in ids if i not in set(listed)]
+
+
+def move_in_story(candidates: list[dict], photo_id: str, target_id: str, place: str) -> tuple[dict, dict]:
+    """Move one photo just before or after another in the same chapter. Returns (previous, new) order."""
+    by_id = {r["id"]: r for r in candidates}
+    chapter = by_id[photo_id]["category"]
+    if by_id[target_id]["category"] != chapter:
+        raise ValueError("photos can only be reordered within their chapter")
+    previous = load_story_order()
+    seq = [i for i in chapter_sequence(candidates, chapter, previous) if i != photo_id]
+    seq.insert(seq.index(target_id) + (1 if place == "after" else 0), photo_id)
+    story = {**previous, chapter: seq}
+    save_story_order(story)
+    return previous, story
 
 
 def chapter_order(events: dict, results: list[dict]) -> list[str]:
@@ -40,6 +70,8 @@ def build(results: list[dict], metrics: dict, events: dict, duplicates: dict) ->
     stored = json.loads(SCORES_FILE.read_text(encoding="utf-8"))["scores"] if SCORES_FILE.exists() else {}
     candidates = [r for r in results if not r["override"].get("exclude")]
     order = chapter_order(events, results)
+    story = load_story_order()
+    position = {i: n for n, i in enumerate(i for chapter in order for i in chapter_sequence(candidates, chapter, story))}
 
     sharp = sorted(metrics.get(r["id"], {}).get("sharpness") or 0 for r in candidates)
     rank = lambda v: sum(1 for s in sharp if s <= v) / max(len(sharp), 1)
@@ -56,7 +88,8 @@ def build(results: list[dict], metrics: dict, events: dict, duplicates: dict) ->
         emotional = int(r["override"].get("emotional") or stored.get(r["id"]) or 3)
         quality = round(rank(metrics.get(r["id"], {}).get("sharpness") or 0), 3)
         photos[r["id"]] = {"emotional": emotional, "emotional_source": "you" if r["override"].get("emotional") else
-                           "first pass" if r["id"] in stored else "default", "quality": quality, "films": {}}
+                           "first pass" if r["id"] in stored else "default", "quality": quality,
+                           "position": position.get(r["id"], len(position)), "films": {}}
 
     films = {}
     for name, prof in profiles["films"].items():
@@ -78,7 +111,7 @@ def build(results: list[dict], metrics: dict, events: dict, duplicates: dict) ->
                     continue
                 chosen.append(r["id"])
             selected |= set(chosen)
-        ordered = [r for r in sorted(candidates, key=lambda r: (order.index(r["category"]), r["capture_order"])) if r["id"] in selected]
+        ordered = [r for r in sorted(candidates, key=lambda r: position.get(r["id"], len(position))) if r["id"] in selected]
         for r in candidates:
             photos[r["id"]]["films"][name] = {"selected": r["id"] in selected, "pin": pins[r["id"]],
                                               "score": round(score[r["id"]], 2)}
@@ -86,4 +119,4 @@ def build(results: list[dict], metrics: dict, events: dict, duplicates: dict) ->
         films[name] = {"label": prof["label"], "count": len(ordered), "by_chapter": per_chapter,
                        "estimated_seconds": round(len(ordered) * prof["nominal_shot_seconds"]),
                        "target_seconds": prof["target_seconds"], "order": [r["id"] for r in ordered]}
-    return {"photos": photos, "films": films, "chapter_order": order}
+    return {"photos": photos, "films": films, "chapter_order": order, "custom_order": bool(story)}

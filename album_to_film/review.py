@@ -8,7 +8,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import paths, process
+from . import editorial, paths, process
 
 PORT = 8765
 ALLOWED_KEYS = {"quad", "rotation_cw_deg", "level", "exclude", "note", "reviewed", "emotional", "trailer", "full"}
@@ -53,6 +53,12 @@ PAGE = r"""<!doctype html>
   .chapterhead { grid-column:1 / -1; margin:14px 0 0; font-size:15px; color:var(--accent); }
   .tile { background:var(--card); border-radius:8px; padding:8px; border:2px solid transparent; }
   .tile.selected { border-color:var(--accent); }
+  .tile[draggable="true"] { cursor:grab; }
+  .tile.dragging { opacity:.35; }
+  .tile.drop-before { box-shadow:-5px 0 0 var(--manual); } .tile.drop-after { box-shadow:5px 0 0 var(--manual); }
+  .tile .seq { display:inline-block; min-width:24px; padding:0 6px; margin-right:4px; border-radius:10px; background:var(--accent);
+               color:#111; font-weight:700; text-align:center; }
+  .tile .mv { float:right; } .tile .mv button { min-height:26px; padding:0 8px; }
   .tile img { display:block; width:100%; height:150px; object-fit:contain; background:#111; border-radius:4px; }
   .tile .cap { margin:6px 0 2px; font-variant-numeric:tabular-nums; color:var(--dim); }
   .tile .cap b { color:var(--ink); } .tile .in { color:var(--accent); font-weight:600; }
@@ -115,7 +121,8 @@ The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: t
 right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review</b> to <b>Done</b>.
 <b>Duplicates</b> lists prints that were photographed more than once: keep one of each group and exclude the rest.
 <b>Films</b> shows which photographs each film uses: change the stars to re-rank, or force a photo <b>In</b> or <b>Out</b>
-(<b>Auto</b> lets the ranking decide). There is no Save button: every change is written to
+(<b>Auto</b> lets the ranking decide). To change the order, drag a photo onto another one in the same chapter,
+or use its ◀ ▶ buttons; the order is one story order shared by both films. There is no Save button: every change is written to
 <code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
 <div class="top">
   <div class="tabs" role="tablist">
@@ -139,6 +146,7 @@ right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review
     <label>Film <select id="film"></select></label>
     <label>Show <select id="filmshow"><option value="selected">In the film</option>
       <option value="rest">Not in the film</option><option value="all">All photos</option></select></label>
+    <button id="resetorder">Reset order</button>
     <span id="filmsummary"></span>
   </span>
   <span id="count"></span>
@@ -224,9 +232,12 @@ function tile(r) {
       data-v="${v}" aria-label="Score ${v} of 5">★</button>`).join('');
   const seg = [['in', 'In'], ['auto', 'Auto'], ['out', 'Out']].map(([k, label]) =>
     `<button class="${state === k ? 'active' : ''}" data-act="pick" data-id="${r.id}" data-v="${k}">${label}</button>`).join('');
-  return `<div class="tile ${f.selected ? 'selected' : ''}" id="t-${r.id}">
-    <a href="${img(r.id, 'light')}" target="_blank"><img loading="lazy" src="${img(r.id, 'light')}" alt=""></a>
-    <div class="cap"><b>#${r.capture_order}</b>${f.selected ? ' · <span class="in">in the film</span>' : ''}</div>
+  const seq = f.selected ? films.films[film].order.indexOf(r.id) + 1 : 0;
+  return `<div class="tile ${f.selected ? 'selected' : ''}" id="t-${r.id}" draggable="true" data-chapter="${esc(r.category)}">
+    <a href="${img(r.id, 'light')}" target="_blank" draggable="false"><img loading="lazy" src="${img(r.id, 'light')}" alt="" draggable="false"></a>
+    <div class="cap">${seq ? `<span class="seq" title="Position in the film">${seq}</span>` : ''}<b>#${r.capture_order}</b>
+      <span class="mv"><button data-act="move" data-id="${r.id}" data-v="-1" aria-label="Move earlier">◀</button><button
+        data-act="move" data-id="${r.id}" data-v="1" aria-label="Move later">▶</button></span></div>
     <div class="stars" title="Emotional score (${e.emotional_source})">${stars}</div><div class="seg">${seg}</div></div>`;
 }
 function renderFilms() {
@@ -235,7 +246,8 @@ function renderFilms() {
   let list = results.filter(r => r.editorial && (!c || r.category === c));
   if (show === 'selected') list = list.filter(r => r.editorial.films[film].selected);
   if (show === 'rest') list = list.filter(r => !r.editorial.films[film].selected);
-  list.sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category) || a.capture_order - b.capture_order);
+  list.sort((a, b) => a.editorial.position - b.editorial.position);
+  document.getElementById('resetorder').hidden = !films.custom_order;
   let html = '', current = null;
   for (const r of list) {
     if (r.category !== current) { current = r.category; html += `<h2 class="chapterhead">${esc(current)}</h2>`; }
@@ -277,6 +289,7 @@ function setStatus(kind, text) {
   el.innerHTML = (kind === 'saving' ? '<span class="spin"></span>' : '') + esc(text);
 }
 function describe(entry) {
+  if (entry.kind === 'order') return 'order';
   const r = results.find(x => x.id === entry.id);
   return `${Object.keys(entry.patch).map(k => names[k] || k).join(', ')} on #${r.capture_order}`;
 }
@@ -446,6 +459,59 @@ document.addEventListener('pointerup', endDrag);
 document.addEventListener('pointercancel', endDrag);
 document.addEventListener('focusout', ev => { if (ev.target.classList && ev.target.classList.contains('handle') && !drag) hideLoupe(); });
 
+const replay = (entry, which) => entry.kind === 'order' ? sendOrder({order: entry[which]}, false) : change(entry.id, entry[which], false);
+
+// Story order: one order per chapter, shared by both films.
+async function sendOrder(payload, record = true) {
+  setStatus('saving', 'Saving…');
+  try {
+    const res = await fetch('/api/order', {method: 'POST', body: JSON.stringify(payload)});
+    const out = await res.json();
+    if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
+    await refreshAll();
+    render();
+    if (record) { undoStack.push({kind: 'order', prev: out.prev, patch: out.order}); redoStack.length = 0; }
+    setStatus('saved', `Order saved at ${clock(new Date())}`);
+    return true;
+  } catch (err) {
+    setStatus('error', `Not saved: ${err.message}`);
+    return false;
+  } finally {
+    refreshButtons();
+  }
+}
+function stepMove(id, direction) {            // one place earlier or later among the tiles shown in its chapter
+  const me = document.getElementById('t-' + id);
+  const same = [...document.querySelectorAll('.tile')].filter(t => t.dataset.chapter === me.dataset.chapter);
+  const other = same[same.indexOf(me) + direction];
+  if (other) sendOrder({move: {id, target: other.id.slice(2), place: direction < 0 ? 'before' : 'after'}});
+}
+let dragId = null;
+const clearDropMarks = () => document.querySelectorAll('.drop-before, .drop-after').forEach(t => t.classList.remove('drop-before', 'drop-after'));
+document.addEventListener('dragstart', ev => {
+  const t = ev.target.closest ? ev.target.closest('.tile') : null;
+  if (!t) return;
+  dragId = t.id.slice(2);
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.dataTransfer.setData('text/plain', dragId);
+  t.classList.add('dragging');
+});
+document.addEventListener('dragover', ev => {
+  const t = ev.target.closest ? ev.target.closest('.tile') : null, me = dragId && document.getElementById('t-' + dragId);
+  clearDropMarks();
+  if (!t || !me || t === me || t.dataset.chapter !== me.dataset.chapter) return;
+  ev.preventDefault();
+  const box = t.getBoundingClientRect();
+  t.classList.add(ev.clientX > box.left + box.width / 2 ? 'drop-after' : 'drop-before');
+});
+document.addEventListener('drop', ev => {
+  const t = document.querySelector('.drop-before, .drop-after');
+  if (!t || !dragId) return;
+  ev.preventDefault();
+  sendOrder({move: {id: dragId, target: t.id.slice(2), place: t.classList.contains('drop-after') ? 'after' : 'before'}});
+});
+document.addEventListener('dragend', () => { clearDropMarks(); document.querySelector('.tile.dragging')?.classList.remove('dragging'); dragId = null; });
+
 async function undo() {
   if (editing && editing.history.length) {
     const step = editing.history.pop();
@@ -455,18 +521,19 @@ async function undo() {
   }
   const entry = undoStack.pop();
   if (!entry) return;
-  if (await change(entry.id, entry.prev, false)) redoStack.push(entry); else undoStack.push(entry);
+  if (await replay(entry, 'prev')) redoStack.push(entry); else undoStack.push(entry);
   refreshButtons();
   document.getElementById('s-' + entry.id)?.scrollIntoView({block: 'nearest'});
 }
 async function redo() {
   const entry = redoStack.pop();
   if (!entry) return;
-  if (await change(entry.id, entry.patch, false)) undoStack.push(entry); else redoStack.push(entry);
+  if (await replay(entry, 'patch')) undoStack.push(entry); else redoStack.push(entry);
   refreshButtons();
   document.getElementById('s-' + entry.id)?.scrollIntoView({block: 'nearest'});
 }
 for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+document.getElementById('resetorder').addEventListener('click', () => sendOrder({order: {}}));
 document.getElementById('film').addEventListener('change', render);
 document.getElementById('filmshow').addEventListener('change', render);
 document.getElementById('undo').addEventListener('click', undo);
@@ -494,6 +561,7 @@ document.addEventListener('click', ev => {
   const b = ev.target.closest('button[data-act]');
   if (!b) return;
   const id = b.dataset.id, r = results.find(x => x.id === id);
+  if (b.dataset.act === 'move') return stepMove(id, +b.dataset.v);
   if (b.dataset.act === 'star') return change(id, {emotional: +b.dataset.v});
   if (b.dataset.act === 'pick') return change(id, {[document.getElementById('film').value]: b.dataset.v === 'auto' ? null : b.dataset.v});
   if (b.dataset.act === 'corners') return startEdit(id);
@@ -536,6 +604,21 @@ def apply_override(photo_id: str, patch: dict) -> dict:
     return next(r for r in results if r["id"] == photo_id)
 
 
+def apply_order(payload: dict) -> dict:
+    """Change the story order: move one photo next to another, or replace the whole order (undo, reset)."""
+    with _lock:
+        if "order" in payload:
+            previous, story = editorial.load_story_order(), payload["order"]
+            editorial.save_story_order(story)
+        else:
+            results = process.run("all", quiet=True)
+            candidates = [r for r in results if not r["override"].get("exclude")]
+            move = payload["move"]
+            previous, story = editorial.move_in_story(candidates, move["id"], move["target"], move["place"])
+        process.run("all", quiet=True)
+    return {"prev": previous, "order": story}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, body: bytes, content_type: str, status: int = 200) -> None:
         self.send_response(status)
@@ -555,7 +638,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(json.dumps(results).encode("utf-8"), "application/json")
         if route == "/api/films":
             return self._send(json.dumps({"films": process.LAST_SELECTION.get("films", {}),
-                                          "chapter_order": process.LAST_SELECTION.get("chapter_order", [])}).encode("utf-8"),
+                                          "chapter_order": process.LAST_SELECTION.get("chapter_order", []),
+                                          "custom_order": process.LAST_SELECTION.get("custom_order", False)}).encode("utf-8"),
                               "application/json")
         if route.startswith("/previews/"):
             base = (paths.PREVIEWS_DIR / "photos").resolve()
@@ -565,11 +649,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(b"not found", "text/plain", 404)
 
     def do_POST(self):
-        if self.path != "/api/override":
+        if self.path not in ("/api/override", "/api/order"):
             return self._send(b"not found", "text/plain", 404)
         try:
             payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            result = apply_override(payload["id"], payload["patch"])
+            result = apply_order(payload) if self.path == "/api/order" else apply_override(payload["id"], payload["patch"])
         except Exception as e:
             return self._send(json.dumps({"error": repr(e)}).encode("utf-8"), "application/json", 400)
         self._send(json.dumps(result).encode("utf-8"), "application/json")
