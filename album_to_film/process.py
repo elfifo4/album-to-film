@@ -12,8 +12,9 @@ import numpy as np
 from . import catalog, detect, orient, paths, restore
 from .analyze import load_reduced
 
-STAGE_VERSION = 4
+STAGE_VERSION = 5
 PREVIEW_LONG_SIDE = 1100
+CAPTURE_LONG_SIDE = 2656     # sharp enough for the magnifier when setting corners by hand
 LEVEL_COLOURS = {"high": (90, 200, 90), "medium": (60, 200, 235), "low": (70, 70, 230), "manual": (235, 160, 60)}
 OVERRIDES_FILE = paths.REVIEW_DIR / "overrides.json"
 
@@ -115,7 +116,7 @@ def process_file(row: dict, variant: dict | None, cfg: dict, ecfg: dict, overrid
     processed = paths.PROCESSED_DIR / f"{pid}.jpg"
     save_jpg(processed, rot(versions[chosen]), 95)
     previews = paths.PREVIEWS_DIR / "pilot"
-    save_jpg(previews / f"{pid}_capture.jpg", small, 85)
+    save_jpg(previews / f"{pid}_capture.jpg", full, 85, CAPTURE_LONG_SIDE)
     save_jpg(previews / f"{pid}_overlay.jpg", overlay, 85)
     save_jpg(previews / f"{pid}_geom.jpg", rot(geom_raw), 88, PREVIEW_LONG_SIDE)
     save_jpg(previews / f"{pid}_light.jpg", rot(light), 88, PREVIEW_LONG_SIDE)

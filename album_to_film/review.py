@@ -47,7 +47,17 @@ PAGE = r"""<!doctype html>
   figure.chosen img { outline:2px solid var(--accent); }
   .capture { position:relative; line-height:0; }
   .capture svg { position:absolute; inset:0; width:100%; height:100%; }
-  .capture.picking { cursor:crosshair; outline:2px dashed var(--manual); }
+  .capture.picking { cursor:crosshair; outline:2px dashed var(--manual); touch-action:none; user-select:none; }
+  figure.wide { grid-column:1 / -1; }
+  figure.wide .capture { width:fit-content; max-width:100%; margin:0 auto; }
+  figure.wide img { width:auto; max-width:100%; height:auto; max-height:calc(100vh - 90px); }
+  #loupe { display:none; position:fixed; z-index:20; width:200px; height:200px; border-radius:50%; pointer-events:none;
+           border:2px solid var(--manual); box-shadow:0 6px 22px #000c; background-color:#111; background-repeat:no-repeat; }
+  #loupe::before, #loupe::after { content:""; position:absolute; }
+  #loupe::before { left:50%; top:0; bottom:0; width:1px; margin-left:-.5px;
+           background:linear-gradient(to bottom, #3ca0eb 0 44%, transparent 44% 56%, #3ca0eb 56%); }
+  #loupe::after { top:50%; left:0; right:0; height:1px; margin-top:-.5px;
+           background:linear-gradient(to right, #3ca0eb 0 44%, transparent 44% 56%, #3ca0eb 56%); }
   .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:12px; }
   button, select, input[type=text] { font:inherit; color:var(--ink); background:#35322f; border:1px solid var(--line);
           border-radius:6px; padding:6px 10px; min-height:34px; }
@@ -61,7 +71,8 @@ PAGE = r"""<!doctype html>
 <h1>Pilot review</h1>
 <p class="lead">Each row shows the capture with the outline used, then geometry only, <b>light</b> and <b>standard</b>.
 The outlined result is the one saved. To fix a crop press <b>Set corners</b> and click the four corners of the
-photograph on the capture, in any order. There is no Save button: every change is written to
+photograph on the capture, in any order; the capture grows and a magnifier follows the pointer so you can
+place each corner precisely (on a touch screen, drag and release). There is no Save button: every change is written to
 <code>review/overrides.json</code> and applied as soon as you make it, and the status on the right confirms it.</p>
 <div class="top">
   <button id="undo" disabled>Undo</button>
@@ -69,6 +80,7 @@ photograph on the capture, in any order. There is no Save button: every change i
   <span id="status" class="saved" role="status" aria-live="polite">Nothing changed yet</span>
 </div>
 <div id="list"></div>
+<div id="loupe" aria-hidden="true"></div>
 <script>
 const colours = {high:'#5ac85a', medium:'#ebc83c', low:'#e65046', manual:'#3ca0eb'};
 const names = {quad:'corners', rotation_cw_deg:'rotation', level:'enhancement', exclude:'exclude', note:'note'};
@@ -172,9 +184,47 @@ async function change(id, patch, record = true) {
 function drawDots(id) {
   const cap = document.querySelector(`.capture[data-id="${id}"]`);
   cap.querySelector('.dots').innerHTML = picking[id].map(p =>
-    `<circle cx="${p[0]*100}" cy="${p[1]*100}" r="1.2" fill="#3ca0eb"/>`).join('');
+    `<ellipse cx="${p[0]*100}" cy="${p[1]*100}" rx="0.5" ry="0.9" fill="#3ca0eb" stroke="#fff" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join('');
 }
+const loupe = document.getElementById('loupe'), RADIUS = 100;
+function hideLoupe() { loupe.style.display = 'none'; }
+// Shows a magnified view of the capture under the pointer, offset so it never covers the spot being placed.
+function moveLoupe(ev) {
+  const cap = ev.target.closest ? ev.target.closest('.capture.picking') : null;
+  if (!cap) return hideLoupe();
+  const box = cap.getBoundingClientRect(), x = ev.clientX - box.left, y = ev.clientY - box.top;
+  if (x < 0 || y < 0 || x > box.width || y > box.height) return hideLoupe();
+  const picture = cap.querySelector('img');
+  const ZOOM = Math.min(6, Math.max(3, picture.naturalWidth / box.width));   // about one capture pixel per screen pixel
+  loupe.style.display = 'block';
+  loupe.style.backgroundImage = `url("${picture.src}")`;
+  loupe.style.backgroundSize = `${box.width * ZOOM}px ${box.height * ZOOM}px`;
+  loupe.style.backgroundPosition = `${RADIUS - x * ZOOM}px ${RADIUS - y * ZOOM}px`;
+  let left = ev.clientX + 28, top = ev.clientY - 2 * RADIUS - 28;
+  if (left + 2 * RADIUS > innerWidth) left = ev.clientX - 2 * RADIUS - 28;
+  if (top < 0) top = ev.clientY + 28;
+  loupe.style.left = left + 'px';
+  loupe.style.top = top + 'px';
+}
+document.addEventListener('pointermove', moveLoupe);
+document.addEventListener('pointerdown', moveLoupe);
+document.addEventListener('scroll', hideLoupe, true);
+// A corner is placed where the pointer is released, so a finger can drag to refine before letting go.
+document.addEventListener('pointerup', ev => {
+  const cap = ev.target.closest ? ev.target.closest('.capture.picking') : null;
+  if (!cap || !picking[cap.dataset.id]) return;
+  const id = cap.dataset.id, box = cap.getBoundingClientRect(), pts = picking[id];
+  const x = (ev.clientX - box.left) / box.width, y = (ev.clientY - box.top) / box.height;
+  if (x < 0 || y < 0 || x > 1 || y > 1) return;
+  pts.push([+x.toFixed(5), +y.toFixed(5)]);
+  drawDots(id);
+  if (ev.pointerType !== 'mouse') hideLoupe();
+  if (pts.length === 4) { delete picking[id]; hideLoupe(); change(id, {quad: pts}); }
+  refreshButtons();
+});
+
 function cancelPicking() {
+  hideLoupe();
   for (const id in picking) { delete picking[id]; document.getElementById('s-' + id).outerHTML = card(results.find(x => x.id === id)); }
   refreshButtons();
 }
@@ -203,14 +253,6 @@ document.addEventListener('keydown', ev => {
 });
 
 document.addEventListener('click', ev => {
-  const cap = ev.target.closest('.capture');
-  if (cap && picking[cap.dataset.id]) {
-    const id = cap.dataset.id, box = cap.getBoundingClientRect(), pts = picking[id];
-    pts.push([+((ev.clientX - box.left) / box.width).toFixed(4), +((ev.clientY - box.top) / box.height).toFixed(4)]);
-    drawDots(id);
-    if (pts.length === 4) { delete picking[id]; change(id, {quad: pts}); }
-    return refreshButtons();
-  }
   const b = ev.target.closest('button[data-act]');
   if (!b) return;
   const id = b.dataset.id, r = results.find(x => x.id === id);
@@ -218,6 +260,8 @@ document.addEventListener('click', ev => {
     picking[id] = [];
     const c = document.querySelector(`.capture[data-id="${id}"]`);
     c.classList.add('picking'); c.querySelector('polygon').style.display = 'none';
+    c.closest('figure').classList.add('wide');
+    c.scrollIntoView({block: 'nearest'});
     b.textContent = 'Click 4 corners (Esc cancels)';
   }
   if (b.dataset.act === 'auto') change(id, {quad: null});
