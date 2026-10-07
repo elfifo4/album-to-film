@@ -9,6 +9,9 @@
 !/LICENSE
 !/REBUILD.md
 !/ROADMAP.md
+!/site.sh
+!/Start site.command
+!/Stop site.command
 !/requirements.txt
 !/requirements.lock
 !/album_to_film/

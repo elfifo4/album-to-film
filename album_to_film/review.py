@@ -1197,6 +1197,8 @@ def run(port: int = PORT) -> None:
     except OSError:
         raise SystemExit(f"The review page is already running: open http://127.0.0.1:{port} "
                          "(or stop the other copy first).")
+    for leftover in (paths.RENDERS_DIR / "drafts").glob("*.partial.mp4"):
+        leftover.unlink()       # a render that was cut off when the site was last stopped
     print(f"review: http://127.0.0.1:{port}  (Ctrl+C to stop)")
     try:
         server.serve_forever()

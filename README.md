@@ -114,7 +114,20 @@ python3 -m venv .venv
 cp config/project.example.json config/project.json
 ```
 
-Edit `config/project.json` so that `source_dir` points to the folder with your captures. Then:
+Edit `config/project.json` so that `source_dir` points to the folder with your captures.
+
+The review site is started and stopped with one script (on macOS you can also double-click
+`Start site.command` and `Stop site.command` in Finder):
+
+```bash
+./site.sh start
+```
+
+```bash
+./site.sh stop
+```
+
+The individual stages:
 
 ```bash
 .venv/bin/python -m album_to_film ingest        # inventory the source folder (read-only)
