@@ -509,7 +509,8 @@ function showLightbox() {
   const a = lightbox.links[lightbox.i], card = a.closest('section, .tile');
   document.getElementById('lbimg').src = a.href;
   const what = a.closest('figure')?.querySelector('figcaption')?.textContent || '';
-  const which = card.querySelector('h2, .cap b').textContent.replace(/\s+/g, ' ').trim();
+  const label = card.querySelector('h2, .cap b, .num');      // card heading, film tile, or All-photos tile
+  const which = (label.classList.contains('num') ? '#' : '') + label.textContent.replace(/\s+/g, ' ').trim();
   document.getElementById('lbcap').textContent = `${which}${what ? ' · ' + what : ''}  (${lightbox.i + 1} of ${lightbox.links.length})`;
   document.getElementById('lbprev').hidden = document.getElementById('lbnext').hidden = lightbox.links.length < 2;
   document.getElementById('lightbox').hidden = false;
