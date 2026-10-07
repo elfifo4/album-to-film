@@ -22,11 +22,12 @@
     "recompress_mean_abs_diff": 3.0
   },
   "crop": {
-    "_note": "No default inward inset: keep the whole print. Inward trim only where a strip just inside the detected edge is mostly paper.",
-    "outward_margin_fraction": 0.004,
-    "inward_evidence_min_paper_fraction": 0.92,
-    "inward_strip_fraction": 0.0075,
-    "inward_max_fraction": 0.04
+    "_note": "No paper may remain around the print. Each side is first trimmed while a thin strip inside the detected edge is mostly paper (bounded by inward_max_fraction), then a small fixed inset removes the soft transition and shadow at the edge. Corners set by hand are used exactly as clicked.",
+    "outward_margin_fraction": 0.0,
+    "inward_evidence_min_paper_fraction": 0.7,
+    "inward_strip_fraction": 0.0015,
+    "inward_max_fraction": 0.015,
+    "edge_inset_fraction": 0.006
   },
   "detect": {
     "reduce": 4,

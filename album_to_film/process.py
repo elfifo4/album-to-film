@@ -12,7 +12,7 @@ import numpy as np
 from . import catalog, detect, orient, paths, restore
 from .analyze import load_reduced
 
-STAGE_VERSION = 5
+STAGE_VERSION = 6
 PREVIEW_LONG_SIDE = 1100
 CAPTURE_LONG_SIDE = 2656     # sharp enough for the magnifier when setting corners by hand
 LEVEL_COLOURS = {"high": (90, 200, 90), "medium": (60, 200, 235), "low": (70, 70, 230), "manual": (235, 160, 60)}
@@ -85,7 +85,8 @@ def process_file(row: dict, variant: dict | None, cfg: dict, ecfg: dict, overrid
             trims = restore.evidence_trim(paper_warped, margin, cfg["crop"])
             if any(trims.values()):
                 flags.append("inward_trim_on_paper_evidence")
-                geom_raw, geom = restore.apply_trim(geom_raw, trims), restore.apply_trim(geom, trims)
+            trims = {side: round(v + cfg["crop"]["edge_inset_fraction"], 4) for side, v in trims.items()}
+            geom_raw, geom = restore.apply_trim(geom_raw, trims), restore.apply_trim(geom, trims)
     else:
         geom_raw, geom = full, corrected
         if det["status"] == "found":
