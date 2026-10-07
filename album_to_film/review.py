@@ -69,6 +69,15 @@ PAGE = r"""<!doctype html>
   .seg button { flex:1; border-radius:0; min-height:32px; padding:4px 0; }
   .seg button:first-child { border-radius:6px 0 0 6px; } .seg button:last-child { border-radius:0 6px 6px 0; }
   .seg button.active { background:var(--accent); color:#111; font-weight:600; border-color:var(--accent); }
+  #lightbox { position:fixed; inset:0; z-index:50; background:#000e; display:flex; align-items:center; justify-content:center; }
+  #lightbox[hidden] { display:none; }
+  #lightbox img { max-width:calc(100vw - 140px); max-height:calc(100vh - 80px); object-fit:contain; border-radius:4px; }
+  #lightbox button { position:absolute; background:#2a2826; border:1px solid var(--line); color:var(--ink); border-radius:50%;
+                     width:48px; height:48px; font-size:26px; line-height:1; padding:0; }
+  #lightbox button:hover { background:#45413d; }
+  #lbclose { top:14px; right:14px; } #lbprev { left:14px; top:50%; margin-top:-24px; } #lbnext { right:14px; top:50%; margin-top:-24px; }
+  #lbcap { position:absolute; bottom:12px; left:0; right:0; text-align:center; color:var(--ink); }
+  @media (max-width: 600px) { #lightbox img { max-width:100vw; } }
   section.leaving { opacity:0; transform:translateX(24px); transition:opacity .25s, transform .25s; }
   @media (prefers-reduced-motion: reduce) { section.leaving { transition:none; } }
   #status { margin-left:auto; display:flex; align-items:center; gap:8px; font-weight:600; }
@@ -154,6 +163,13 @@ or use its ◀ ▶ buttons; the order is one story order shared by both films. T
 </div>
 <div id="list"></div>
 <div id="loupe" aria-hidden="true"></div>
+<div id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Enlarged photograph">
+  <button id="lbclose" aria-label="Close">&times;</button>
+  <button id="lbprev" aria-label="Previous">&#8249;</button>
+  <img id="lbimg" alt="">
+  <button id="lbnext" aria-label="Next">&#8250;</button>
+  <div id="lbcap"></div>
+</div>
 <script>
 const names = {quad:'corners', rotation_cw_deg:'rotation', level:'enhancement', exclude:'exclude', note:'note', reviewed:'looks good', emotional:'score', trailer:'trailer pick', full:'full movie pick'};
 const savedAt = {}, undoStack = [], redoStack = [];
@@ -459,6 +475,41 @@ document.addEventListener('pointerup', endDrag);
 document.addEventListener('pointercancel', endDrag);
 document.addEventListener('focusout', ev => { if (ev.target.classList && ev.target.classList.contains('handle') && !drag) hideLoupe(); });
 
+// Enlarged view in place of opening the image in a new browser tab. Arrows step through the images beside it.
+let lightbox = null;      // {links, i}
+function showLightbox() {
+  const a = lightbox.links[lightbox.i], card = a.closest('section, .tile');
+  document.getElementById('lbimg').src = a.href;
+  const what = a.closest('figure')?.querySelector('figcaption')?.textContent || '';
+  const which = card.querySelector('h2, .cap b').textContent.replace(/\s+/g, ' ').trim();
+  document.getElementById('lbcap').textContent = `${which}${what ? ' · ' + what : ''}  (${lightbox.i + 1} of ${lightbox.links.length})`;
+  document.getElementById('lbprev').hidden = document.getElementById('lbnext').hidden = lightbox.links.length < 2;
+  document.getElementById('lightbox').hidden = false;
+  document.body.style.overflow = 'hidden';
+}
+function closeLightbox() {
+  lightbox = null;
+  document.getElementById('lightbox').hidden = true;
+  document.body.style.overflow = '';
+}
+function stepLightbox(d) {
+  lightbox.i = (lightbox.i + d + lightbox.links.length) % lightbox.links.length;
+  showLightbox();
+}
+document.addEventListener('click', ev => {
+  const a = ev.target.closest ? ev.target.closest('#list a[target="_blank"]') : null;
+  if (a) {
+    ev.preventDefault();
+    const links = [...a.closest('.shots, .grid').querySelectorAll('a[target="_blank"]')];
+    lightbox = {links, i: links.indexOf(a)};
+    return showLightbox();
+  }
+  if (!lightbox) return;
+  if (ev.target.id === 'lbprev') return stepLightbox(-1);
+  if (ev.target.id === 'lbnext') return stepLightbox(1);
+  if (ev.target.id === 'lbclose' || ev.target.id === 'lightbox') closeLightbox();    // the X, or the dark area around the photo
+});
+
 const replay = (entry, which) => entry.kind === 'order' ? sendOrder({order: entry[which]}, false) : change(entry.id, entry[which], false);
 
 // Story order: one order per chapter, shared by both films.
@@ -541,6 +592,12 @@ document.getElementById('redo').addEventListener('click', redo);
 document.getElementById('filter').addEventListener('change', () => { cancelEdit(); render(); });
 document.getElementById('chapter').addEventListener('change', () => { cancelEdit(); render(); });
 document.addEventListener('keydown', ev => {
+  if (lightbox) {
+    if (ev.key === 'Escape') closeLightbox();
+    if (ev.key === 'ArrowLeft') stepLightbox(-1);
+    if (ev.key === 'ArrowRight') stepLightbox(1);
+    return;
+  }
   if (ev.key === 'Escape') return cancelEdit();
   if (ev.target.matches('input[type=text]')) return;
   if (editing && ev.key === 'Enter') { ev.preventDefault(); return applyEdit(); }
