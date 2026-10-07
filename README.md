@@ -64,8 +64,9 @@ reports, review decisions, music and video cannot be committed by accident, what
 | `review` | Local review page with a "needs review" queue: click four corners with a magnifier, rotate, choose enhancement, exclude, note; with undo | done |
 | `dedupe` | Groups repeated captures of the same print and tells them apart from similar shots of one scene (flag only, nothing deleted) | done |
 | editorial | Per-photo scores and a separate selection for each film, from the profiles in `config/films.json`; adjustable in the review page's Films tab (stars, In / Auto / Out) | done |
-| timeline | Shot durations with min/max/weight, refined (not dictated) by the music's beats | next |
-| render | Ken Burns motion and transitions, drawn frame by frame and encoded with FFmpeg | planned |
+| `timeline` | Resolves each film into exact cut points, transitions and camera moves. Shot lengths come from editorial constraints (preferred, min, max, weight); a tempo map only snaps cuts to nearby beats within those limits | done |
+| `render` | Ken Burns motion, crossfades and chapter dips, drawn frame by frame with sub-pixel precision and encoded with FFmpeg; short pilots so far | in progress |
+| titles and music | Chapter title cards, a song, cuts fitted to its beats | planned |
 
 ### Finding the print
 
@@ -121,6 +122,8 @@ Edit `config/project.json` so that `source_dir` points to the folder with your c
 .venv/bin/python -m album_to_film pilot-run     # restore the pilot set
 .venv/bin/python -m album_to_film restore       # restore every photograph
 .venv/bin/python -m album_to_film dedupe        # group repeated captures of the same print
+.venv/bin/python -m album_to_film timeline --film trailer          # resolve timing, transitions, camera moves
+.venv/bin/python -m album_to_film render --film trailer --pilot    # short pilot in renders/drafts
 .venv/bin/python -m album_to_film review        # review page on http://127.0.0.1:8765
 .venv/bin/python -m album_to_film verify        # confirm the source folder is unchanged
 ```

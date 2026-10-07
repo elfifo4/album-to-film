@@ -15,6 +15,13 @@ def main() -> int:
     sub.add_parser("pilot-run", help="restore the pilot files only")
     sub.add_parser("restore", help="detect, orient and enhance every photograph (resumable)")
     sub.add_parser("dedupe", help="group repeated captures of the same print (flag only)")
+    tl = sub.add_parser("timeline", help="resolve a film's timing, transitions and camera moves")
+    tl.add_argument("--film", required=True)
+    rd = sub.add_parser("render", help="render a film (or a short pilot) to renders/drafts")
+    rd.add_argument("--film", required=True)
+    rd.add_argument("--height", type=int, default=1080, help="frame height in pixels, e.g. 540 or 1080")
+    rd.add_argument("--pilot", action="store_true", help="a short cut across the chapter changes")
+    rd.add_argument("--draft", action="store_true", help="faster, lower quality")
     sub.add_parser("review", help="serve the interactive review page on 127.0.0.1:8765")
     args = parser.parse_args()
 
@@ -42,6 +49,12 @@ def main() -> int:
     elif args.stage == "dedupe":
         from . import dedupe
         dedupe.run()
+    elif args.stage == "timeline":
+        from . import timeline
+        timeline.run(args.film)
+    elif args.stage == "render":
+        from . import render
+        render.run(args.film, args.height, args.pilot, args.draft)
     elif args.stage == "review":
         from . import review
         review.run()
