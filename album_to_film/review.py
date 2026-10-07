@@ -95,12 +95,14 @@ PAGE = r"""<!doctype html>
 <p class="lead">Each row shows the capture with the outline used, then geometry only, <b>light</b> and <b>standard</b>.
 The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: the outline appears with four handles, drag any of them
 (a magnifier shows the exact spot; arrow keys nudge a focused handle), then press <b>Apply corners</b> in the bar at the top. When a photo is
-right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review</b> to <b>Done</b>. There is no Save button: every change is written to
+right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review</b> to <b>Done</b>.
+<b>Duplicates</b> lists prints that were photographed more than once: keep one of each group and exclude the rest. There is no Save button: every change is written to
 <code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
 <div class="top">
   <div class="tabs" role="tablist">
     <button role="tab" id="tab-todo" data-tab="todo" aria-selected="true">To review<span class="n" id="n-todo">0</span></button>
     <button role="tab" id="tab-done" data-tab="done" aria-selected="false">Done<span class="n" id="n-done">0</span></button>
+    <button role="tab" id="tab-dups" data-tab="dups" aria-selected="false">Duplicates<span class="n" id="n-dups">0</span></button>
   </div>
   <button id="undo" disabled>Undo</button>
   <button id="redo" disabled>Redo</button>
@@ -138,7 +140,8 @@ function card(r) {
   return `<section id="s-${r.id}" class="${ov.exclude ? 'excluded' : ''}">
     <div class="loading"><span class="box"><span class="spin"></span>Saving and reprocessing…</span></div>
     <h2>#${r.capture_order} &nbsp; ${esc(r.filename)} &nbsp; <span class="tag event">${r.category}</span>
-      ${r.needs_review ? '<span class="tag todo">needs review</span>' : ''}</h2>
+      ${r.needs_review ? '<span class="tag todo">needs review</span>' : ''}
+      ${r.duplicate ? `<span class="tag manual">same print as ${r.duplicate.others.map(o => '#' + o).join(', ')}${r.duplicate.suggested_keep ? ' · sharpest' : ''}</span>` : ''}</h2>
     <div class="shots">
       <figure><div class="capture" data-id="${r.id}"><img loading="lazy" src="${img(r.id, 'overlay')}" alt="" draggable="false">
 </div>
@@ -171,6 +174,7 @@ function card(r) {
 function visible(r) {
   const f = document.getElementById('filter').value, c = document.getElementById('chapter').value, ov = r.override || {};
   if (c && r.category !== c) return false;
+  if (tab === 'dups') return !!r.duplicate;
   if (tab === 'todo') return r.needs_review;
   if (r.needs_review) return false;
   if (f === 'mine') return Object.keys(ov).length > 0;
@@ -188,6 +192,7 @@ function showTab(name) {
 // Redraws the list for the current filter. A photo you just settled stays visible until the next redraw.
 function render() {
   const shown = results.filter(visible);
+  if (tab === 'dups') shown.sort((a, b) => a.duplicate.group - b.duplicate.group || a.capture_order - b.capture_order);
   document.getElementById('list').innerHTML = shown.map(card).join('') ||
     `<p id="empty">${tab === 'todo' ? 'Nothing left to review here.' : 'Nothing to show for this filter.'}</p>`;
   updateCount();
@@ -196,6 +201,9 @@ function updateCount() {
   const shown = document.querySelectorAll('#list section:not(.leaving)').length, todo = results.filter(r => r.needs_review).length;
   document.getElementById('n-todo').textContent = todo;
   document.getElementById('n-done').textContent = results.length - todo;
+  const open = new Set(results.filter(r => r.duplicate && !(r.override || {}).exclude).map(r => r.duplicate.group));
+  const kept = g => results.filter(r => r.duplicate && r.duplicate.group === g && !(r.override || {}).exclude).length;
+  document.getElementById('n-dups').textContent = [...open].filter(g => kept(g) > 1).length;
   document.getElementById('count').textContent = `${shown} shown`;
   if (!shown && !document.getElementById('empty')) render();
 }

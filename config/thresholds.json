@@ -72,5 +72,10 @@
   },
   "restore": {
     "min_free_disk_gb": 3
+  },
+  "dedupe": {
+    "candidate_correlation": 0.75,
+    "same_print_block_correlation": 0.97,
+    "same_print_min_inlier_ratio": 0.7
   }
 }

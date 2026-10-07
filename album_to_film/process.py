@@ -173,7 +173,8 @@ def write_editorial(results: list[dict], metrics: dict, events: dict, filename: 
             "chapter": category, "capture_order": r["capture_order"],
             "crop_confidence": r["detect"]["confidence"], "orientation_confidence": r["orientation"]["confidence"],
             "sharpness": metrics.get(r["id"], {}).get("sharpness"),
-            "quality_score": None, "emotional_score": None, "uniqueness_score": None, "duplicate_group": None,
+            "quality_score": None, "emotional_score": None, "uniqueness_score": None,
+            "duplicate_group": (r.get("duplicate") or {}).get("group"),
             "use_in_trailer": None, "use_in_full_movie": None, "excluded": bool(o.get("exclude")),
             "preferred_duration": None, "min_duration": None, "max_duration": None, "duration_weight": 1.0,
             "motion_style": None, "transition_in": None, "transition_out": None, "crop_mode": None,
@@ -248,6 +249,8 @@ def run(scope: str = "all", quiet: bool = False) -> list[dict]:
     if free_gb < cfg["restore"]["min_free_disk_gb"]:
         raise SystemExit(f"Only {free_gb:.1f} GB free; refusing to start (minimum {cfg['restore']['min_free_disk_gb']} GB).")
 
+    dup_file = paths.REPORTS_DIR / "duplicates.json"
+    duplicates = json.loads(dup_file.read_text(encoding="utf-8"))["by_photo"] if dup_file.exists() else {}
     results, errors, started = [], [], time.time()
     for n, photo_id in enumerate(ids, 1):
         try:
@@ -257,6 +260,7 @@ def run(scope: str = "all", quiet: bool = False) -> list[dict]:
             continue
         result["category"] = category_for(result["capture_order"], events)
         result["needs_review"] = needs_review(result)
+        result["duplicate"] = duplicates.get(photo_id)
         results.append(result)
         if not quiet and n % 25 == 0:
             print(f"  restore {n}/{len(ids)}  ({time.time() - started:.0f}s)")
