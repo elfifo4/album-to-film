@@ -18,6 +18,10 @@ from . import catalog, paths, timeline as timeline_mod, titles
 FIT_FRACTION = 0.94      # an upright print is shown whole, slightly inside the frame
 
 
+class Cancelled(Exception):
+    """Raised when a render is stopped on request."""
+
+
 def smoothstep(p: float) -> float:
     p = min(max(p, 0.0), 1.0)
     return p * p * (3 - 2 * p)
@@ -109,16 +113,22 @@ def compose(t: float, tl: dict, layers: dict, width: int, height: int, draft: bo
     return frame if gain >= 0.999 else cv2.convertScaleAbs(frame, alpha=gain)
 
 
-def render(tl: dict, out_path, height: int, draft: bool = False) -> dict:
-    """Render one resolved timeline to an MP4. Returns measurements of the run."""
+def render(tl: dict, out_path, height: int, draft: bool = False, progress=None) -> dict:
+    """Render one resolved timeline to an MP4. Returns measurements of the run.
+
+    `progress(frame, frames)` is called as frames are drawn; returning False stops the render. The film
+    is written beside its final name and moved into place only when complete, so an earlier version
+    stays playable until the new one is ready.
+    """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise SystemExit("FFmpeg is required for rendering but was not found on this machine.")
     cfg = catalog.load_config("films.json")["output"]
     width = int(round(height * tl["aspect"][0] / tl["aspect"][1] / 2)) * 2
     fps, frames = tl["fps"], int(round(tl["duration"] * tl["fps"]))
-    out_path = paths.assert_not_in_source(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    final_path = paths.assert_not_in_source(out_path)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = final_path.with_name(final_path.stem + ".partial" + final_path.suffix)
     video_in = ["-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}", "-r", str(fps), "-i", "-"]
     audio_in, audio_out = [], ["-an"]
     if tl.get("audio"):
@@ -138,11 +148,21 @@ def render(tl: dict, out_path, height: int, draft: bool = False) -> dict:
         stdin=subprocess.PIPE)
     layers: dict = {}
     started, cpu0 = time.time(), time.process_time()
-    for f in range(frames):
-        encoder.stdin.write(compose(f / fps, tl, layers, width, height, draft).tobytes())
-    encoder.stdin.close()
-    if encoder.wait() != 0:
-        raise SystemExit("FFmpeg failed while encoding.")
+    try:
+        for f in range(frames):
+            encoder.stdin.write(compose(f / fps, tl, layers, width, height, draft).tobytes())
+            if progress and f % 15 == 0 and progress(f, frames) is False:
+                raise Cancelled()
+        encoder.stdin.close()
+        if encoder.wait() != 0:
+            raise RuntimeError("FFmpeg failed while encoding.")
+    except BaseException:
+        encoder.kill()
+        encoder.wait()
+        out_path.unlink(missing_ok=True)
+        raise
+    out_path.replace(final_path)
+    out_path = final_path
     wall = time.time() - started
     return {
         "name": tl["name"], "file": str(out_path.relative_to(paths.ROOT)), "size": f"{width}x{height}", "fps": fps,

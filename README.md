@@ -62,6 +62,7 @@ reports, review decisions, music and video cannot be committed by accident, what
 | `pilot-run` | Finds the print, corrects perspective, orients, enhances; pilot set only | done |
 | `restore` | The same restoration for every photograph, resumable | done |
 | `review` | Local review page with a "needs review" queue: click four corners with a magnifier, rotate, choose enhancement, exclude, note; with undo | done |
+| Render tab | In the review page: render a quick preview or 1080p of each film from the current state, with progress and cancel, watch it in a built-in player, and keep dated final copies | done |
 | `dedupe` | Groups repeated captures of the same print and tells them apart from similar shots of one scene (flag only, nothing deleted) | done |
 | editorial | Per-photo scores and a separate selection for each film, from the profiles in `config/films.json`; adjustable in the review page's Films tab (stars, In / Auto / Out) | done |
 | `timeline` | Resolves each film into exact cut points, transitions and camera moves. Shot lengths come from editorial constraints (preferred, min, max, weight); a tempo map only snaps cuts to nearby beats within those limits | done |

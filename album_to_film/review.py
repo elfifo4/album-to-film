@@ -4,15 +4,18 @@ Lets you click the four corners of a print, rotate, choose the enhancement level
 checked, exclude it and leave a note. Decisions are saved to review/overrides.json and the photo is
 reprocessed at once.
 """
+import hashlib
 import json
+import shutil
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 import numpy as np
 
-from . import catalog, editorial, paths, process, titles
+from . import catalog, editorial, paths, process, render, timeline, titles
 
 PORT = 8765
 ALLOWED_KEYS = {"quad", "rotation_cw_deg", "level", "exclude", "note", "reviewed", "emotional", "trailer", "full"}
@@ -94,6 +97,18 @@ PAGE = r"""<!doctype html>
   #titledlg .row { display:flex; flex-wrap:wrap; gap:14px; align-items:end; }
   #titledlg .row label { flex:1 1 140px; } #titledlg .row label.check { flex:0 0 auto; display:flex; align-items:center; gap:6px; color:var(--ink); }
   #titlepreview { width:100%; aspect-ratio:16 / 9; background:#000; border-radius:6px; display:block; }
+  .rgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:18px; align-items:start; }
+  .rcard { background:var(--card); border-radius:8px; padding:16px; display:grid; gap:12px; }
+  .rcard h2 { margin:0; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  .rcard video { width:100%; aspect-ratio:16 / 9; background:#000; border-radius:6px; display:block; }
+  .rcard .empty { aspect-ratio:16 / 9; display:flex; align-items:center; justify-content:center; background:#111; border-radius:6px; color:var(--dim); }
+  .rsummary { color:var(--ink); font-variant-numeric:tabular-nums; } .rsummary .flag { display:block; }
+  .ractions, .rversions, .rfinals { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .rversions button.on { background:var(--accent); color:#111; font-weight:600; border-color:var(--accent); }
+  .rprogress { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  .rprogress progress { flex:1 1 180px; height:14px; accent-color:var(--accent); }
+  .rnote { color:var(--dim); font-size:13px; }
+  .fresh { background:var(--high); } .stale { background:var(--medium); } .none { background:#5a5550; color:#fff; }
   #lightbox { position:fixed; inset:0; z-index:50; background:#000e; display:flex; align-items:center; justify-content:center; }
   #lightbox[hidden] { display:none; }
   #lightbox img { max-width:calc(100vw - 140px); max-height:calc(100vh - 80px); object-fit:contain; border-radius:4px; }
@@ -155,7 +170,7 @@ The outlined result is the one saved. To fix a crop press <b>Edit corners</b>: t
 right, tick <b>Looks good</b> (or <b>Exclude</b>) and it moves from <b>To review</b> to <b>Done</b>.
 <b>Duplicates</b> lists prints that were photographed more than once: keep one of each group and exclude the rest.
 <b>Films</b> shows which photographs each film uses: change the stars to re-rank, or force a photo <b>In</b> or <b>Out</b>
-(<b>Auto</b> lets the ranking decide). Dashed boxes in the film are places for a title card (opening, start of a chapter, closing). To change the order, drag a photo onto another one in the same chapter,
+(<b>Auto</b> lets the ranking decide). <b>Render</b> makes the films from the current state and plays them here. Dashed boxes in the film are places for a title card (opening, start of a chapter, closing). To change the order, drag a photo onto another one in the same chapter,
 or use its ◀ ▶ buttons; the order is one story order shared by both films.
 <b>All photos</b> lists every photograph by its number, with a button per film to put it in or take it out. There is no Save button: every change is written to
 <code>review/overrides.json</code> as soon as you make it, and the status on the right confirms it.</p>
@@ -166,6 +181,7 @@ or use its ◀ ▶ buttons; the order is one story order shared by both films.
     <button role="tab" id="tab-dups" data-tab="dups" aria-selected="false">Duplicates<span class="n" id="n-dups">0</span></button>
     <button role="tab" id="tab-films" data-tab="films" aria-selected="false">Films</button>
     <button role="tab" id="tab-all" data-tab="all" aria-selected="false">All photos<span class="n" id="n-all">0</span></button>
+    <button role="tab" id="tab-render" data-tab="render" aria-selected="false">Render</button>
   </div>
   <button id="undo" disabled>Undo</button>
   <button id="redo" disabled>Redo</button>
@@ -220,6 +236,8 @@ const savedAt = {}, undoStack = [], redoStack = [];
 let stamp = Date.now(), results = [];
 let films = {films: {}, chapter_order: []};
 let titleData = {slots: [], cards: {}};
+let renderState = null, renderTimer = null;
+const shownVersion = {};     // per film: which rendered version the player shows ('540', '1080' or a final's url)
 let tab = 'todo';      // which tab is open: 'todo' (To review) or 'done'
 let editing = null;   // {id, pts: four [x, y] fractions of the capture, history: [{i, before}]}
 let drag = null;
@@ -283,6 +301,8 @@ function showTab(name) {
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', b.dataset.tab === tab);
   document.getElementById('showwrap').hidden = tab !== 'done';
   document.getElementById('filmctl').hidden = tab !== 'films';
+  clearTimeout(renderTimer);
+  if (tab === 'render') loadRender();
   render();
   scrollTo({top: 0});
 }
@@ -359,6 +379,84 @@ function renderAll() {
   document.getElementById('list').innerHTML = html ? `<div class="grid">${html}</div>` : '<p id="empty">Nothing to show for this filter.</p>';
   document.getElementById('count').textContent = `${list.length} shown`;
 }
+// ---- Render tab: make the films from the current state and watch them here.
+const mmss = t => `${Math.floor(t / 60)}:${String(Math.round(t) % 60).padStart(2, '0')}`;
+async function loadRender() {
+  const before = renderState && renderState.current;
+  try { renderState = await (await fetch('/api/render')).json(); } catch (err) { setStatus('error', 'Lost contact with the review server'); }
+  const now = renderState.current;
+  if (before && !(now && now.film === before.film && now.height === before.height)) {      // a render just ended
+    const done = renderState.films[before.film].versions[before.height];
+    if (done.exists && !done.stale) { shownVersion[before.film] = before.height; setStatus('saved', `${renderState.films[before.film].label} rendered`); }
+  }
+  if (tab !== 'render') return;
+  drawRender();
+  clearTimeout(renderTimer);
+  const busy = renderState && (renderState.current || renderState.queue.length);
+  renderTimer = setTimeout(loadRender, busy ? 1000 : 6000);
+}
+async function renderPost(payload) {
+  const res = await fetch('/api/render', {method: 'POST', body: JSON.stringify(payload)});
+  const out = await res.json();
+  if (!res.ok || out.error) return setStatus('error', `Render: ${out.error || res.status}`);
+  renderState = out;
+  drawRender();
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(loadRender, 800);
+}
+// Cards are built once and then updated in place, so a playing video is never interrupted by a status refresh.
+function drawRender() {
+  const list = document.getElementById('list');
+  document.getElementById('count').textContent = '';
+  if (!renderState) { list.innerHTML = '<p id="empty">Loading…</p>'; return; }
+  if (!list.querySelector('.rgrid')) {
+    list.innerHTML = '<div class="rgrid">' + Object.keys(renderState.films).map(k => `<div class="rcard" id="r-${k}">
+      <h2></h2><div class="rsummary"></div><div class="ractions"></div><div class="rprogress"></div>
+      <div class="rversions"></div><div class="rplayer"></div><div class="rfinals"></div></div>`).join('') + '</div>';
+  }
+  const job = renderState.current, queued = renderState.queue;
+  for (const [k, f] of Object.entries(renderState.films)) {
+    const card = document.getElementById('r-' + k), v = f.versions, s = f.summary;
+    const rendered = Object.keys(v).filter(h => v[h].exists);
+    if (!shownVersion[k] || (v[shownVersion[k]] && !v[shownVersion[k]].exists))
+      shownVersion[k] = rendered.sort((a, b) => v[b].rendered_at - v[a].rendered_at)[0] || null;
+    const shown = shownVersion[k], cur = v[shown];
+    const state = !rendered.length ? ['none', 'Not rendered yet'] : !cur ? ['fresh', 'Final version'] :
+                  cur.stale ? ['stale', 'Changed since this render'] : ['fresh', 'Up to date'];
+    card.querySelector('h2').innerHTML = `${esc(f.label)} <span class="tag ${state[0]}">${state[1]}</span>`;
+    const anchor = s.anchors.map(a => `song ${mmss(a.song_time)} lands on #${a.capture_order} at ${mmss(a.film_time)}`).join('; ');
+    card.querySelector('.rsummary').innerHTML = `Now: ${mmss(s.duration)} · ${s.photos} photographs` +
+      (s.titles ? ` · ${s.titles} title card${s.titles > 1 ? 's' : ''}` : '') + ` · typical shot ${s.typical_shot}s` +
+      (s.music ? '' : ' · no music') + (anchor ? `<br>${esc(anchor)}` : '') +
+      s.warnings.map(w => `<span class="flag">${esc(w)}</span>`).join('');
+    const mine = job && job.film === k, waiting = queued.filter(q => q.film === k);
+    card.querySelector('.ractions').innerHTML = Object.entries(v).map(([h, q]) => {
+      const active = (mine && job.height === h) || waiting.some(w => w.height === h);
+      return `<button class="${h === '1080' ? 'primary' : ''}" data-act="render-start" data-film="${k}" data-height="${h}" ${active ? 'disabled' : ''}>
+        ${h === '1080' ? 'Render 1080p' : 'Quick preview'}</button>`; }).join('') +
+      (waiting.length ? `<span class="rnote">Queued: ${waiting.map(w => v[w.height].label).join(', ')}</span>` : '');
+    let progress = '';
+    if (mine) {
+      const pct = job.frames ? Math.round(100 * job.frame / job.frames) : 0;
+      progress = `<progress value="${pct}" max="100" aria-label="Render progress"></progress>
+        <span>${v[job.height].label}: ${job.frames ? pct + '%' : 'preparing…'}${job.eta_seconds != null ? ` · about ${mmss(job.eta_seconds)} left` : ''}</span>
+        <button data-act="render-cancel">Cancel</button>`;
+    }
+    card.querySelector('.rprogress').innerHTML = progress;
+    card.querySelector('.rversions').innerHTML = rendered.length ? 'Watch: ' + Object.entries(v).filter(([, q]) => q.exists).map(([h, q]) =>
+      `<button class="${shown === h ? 'on' : ''}" data-act="render-show" data-film="${k}" data-height="${h}">${q.label}</button>`).join('') +
+      (cur ? `<span class="rnote">${new Date(cur.rendered_at * 1000).toLocaleString()} · ${cur.mb} MB</span>` : '') : '';
+    const url = cur ? cur.url : (shown || null), player = card.querySelector('.rplayer');
+    if (!url) player.innerHTML = '<div class="empty">Nothing rendered yet</div>';
+    else if (player.dataset.url !== url) player.innerHTML = `<video controls preload="metadata" src="${url}"></video>`;
+    player.dataset.url = url || '';
+    card.querySelector('.rfinals').innerHTML =
+      (cur ? `<button data-act="render-final" data-film="${k}" data-height="${shown}" title="Copies this version to renders/final with today's date; finals are never overwritten">Save as final</button>` : '') +
+      f.finals.map(x => `<button class="${shown === x.url ? 'on' : ''}" data-act="render-play" data-film="${k}" data-url="${x.url}">▶ ${esc(x.name)} (${x.mb} MB)</button>`).join('');
+  }
+  if (renderState.error) setStatus('error', `Render failed: ${renderState.error}`);
+}
+
 async function refreshAll() {
   results = await (await fetch('/api/results')).json();
   films = await (await fetch('/api/films')).json();
@@ -368,6 +466,7 @@ function render() {
   document.getElementById('n-all').textContent = results.length;
   if (tab === 'films') return renderFilms();
   if (tab === 'all') return renderAll();
+  if (tab === 'render') return drawRender();
   const shown = results.filter(visible);
   if (tab === 'dups') shown.sort((a, b) => a.duplicate.group - b.duplicate.group || a.capture_order - b.capture_order);
   document.getElementById('list').innerHTML = shown.map(card).join('') ||
@@ -375,7 +474,7 @@ function render() {
   updateCount();
 }
 function updateCount() {
-  if (tab === 'films' || tab === 'all') return;
+  if (tab === 'films' || tab === 'all' || tab === 'render') return;
   const shown = document.querySelectorAll('#list section:not(.leaving)').length, todo = results.filter(r => r.needs_review).length;
   document.getElementById('n-todo').textContent = todo;
   document.getElementById('n-done').textContent = results.length - todo;
@@ -768,6 +867,12 @@ document.addEventListener('keydown', ev => {
 document.addEventListener('click', ev => {
   const b = ev.target.closest('button[data-act]');
   if (!b) return;
+  if (b.dataset.act === 'render-start') return renderPost({action: 'start', film: b.dataset.film, height: b.dataset.height});
+  if (b.dataset.act === 'render-cancel') return renderPost({action: 'cancel'});
+  if (b.dataset.act === 'render-final') return renderPost({action: 'final', film: b.dataset.film, height: b.dataset.height})
+    .then(() => setStatus('saved', 'Saved a dated copy to renders/final'));
+  if (b.dataset.act === 'render-show') { shownVersion[b.dataset.film] = b.dataset.height; return drawRender(); }
+  if (b.dataset.act === 'render-play') { shownVersion[b.dataset.film] = b.dataset.url; return drawRender(); }
   if (b.dataset.act === 'title-edit') return openTitleEditor(b.dataset.slot);
   if (b.dataset.act === 'title-delete') {
     const rest = {...titleData.cards};
@@ -834,6 +939,143 @@ def apply_order(payload: dict) -> dict:
     return {"prev": previous, "order": story}
 
 
+QUALITIES = {"540": {"label": "Quick preview", "draft": True}, "1080": {"label": "1080p", "draft": False}}
+
+
+def film_state(film: str) -> tuple[dict, str, dict]:
+    """Resolve a film as it stands now: (timeline, fingerprint of everything a render depends on, summary)."""
+    tl = timeline.solve(film)
+    basis = []
+    for s in tl["shots"]:
+        f = paths.ROOT / s["path"] if s["kind"] == "photo" else None
+        stamp = [f.stat().st_mtime_ns, f.stat().st_size] if f and f.exists() else None
+        basis.append([s["id"], s["start"], s["end"], s["transition_in"], s.get("motion"), s.get("card"), stamp])
+    fingerprint = hashlib.sha256(json.dumps([basis, tl["audio"], tl["duration"]], sort_keys=True, default=str).encode()).hexdigest()[:16]
+    photos = [s for s in tl["shots"] if s["kind"] == "photo"]
+    lengths = [s["end"] - s["start"] for s in photos]
+    anchors = [{"capture_order": tl["shots"][k]["capture_order"], "film_time": tl["shots"][k]["start"],
+                "song_time": tl["shots"][k]["start"] + tl["audio"][0]["offset"]} for k in tl["anchored_boundaries"] if tl["audio"]]
+    summary = {"duration": tl["duration"], "photos": len(photos), "titles": len(tl["shots"]) - len(photos),
+               "shortest_shot": round(min(lengths), 2), "typical_shot": round(sorted(lengths)[len(lengths) // 2], 2),
+               "music": bool(tl["audio"]), "anchors": anchors, "warnings": tl["warnings"]}
+    return tl, fingerprint, summary
+
+
+def draft_path(film: str, height: str):
+    return paths.RENDERS_DIR / "drafts" / f"{film}_{height}p.mp4"
+
+
+class RenderJobs:
+    """Renders run one at a time on a background thread; the page polls for progress."""
+
+    def __init__(self):
+        self.guard = threading.Lock()
+        self.queue: list[dict] = []
+        self.current: dict | None = None
+        self.stop = False
+        self.error: str | None = None
+        self.thread: threading.Thread | None = None
+
+    def start(self, film: str, height: str) -> None:
+        job = {"film": film, "height": height}
+        with self.guard:
+            same = lambda j: j and j["film"] == film and j["height"] == height
+            if same(self.current) or any(same(j) for j in self.queue):
+                return
+            self.queue.append(job)
+            if not self.thread or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self._work, daemon=True)
+                self.thread.start()
+
+    def cancel(self) -> None:
+        with self.guard:
+            self.queue.clear()
+            self.stop = True
+
+    def _work(self) -> None:
+        while True:
+            with self.guard:
+                if not self.queue:
+                    self.current = None
+                    return
+                job = self.queue.pop(0)
+                self.current = {**job, "frame": 0, "frames": 0, "started": time.time()}
+                self.stop, self.error = False, None
+            try:
+                with _lock:                         # read a consistent state, then render without holding the lock
+                    process.run("all", quiet=True)
+                    tl, fingerprint, summary = film_state(job["film"])
+
+                def progress(frame, frames):
+                    self.current.update(frame=frame, frames=frames)
+                    return not self.stop
+
+                out = draft_path(job["film"], job["height"])
+                stats = render.render(tl, out, int(job["height"]), QUALITIES[job["height"]]["draft"], progress)
+                meta = {"fingerprint": fingerprint, "rendered_at": time.time(), "summary": summary, "stats": stats}
+                catalog.write_text_atomic(out.with_suffix(".json"), json.dumps(meta, indent=1))
+            except render.Cancelled:
+                pass
+            except Exception as e:                  # shown on the page; the worker carries on with the queue
+                self.error = f"{job['film']} {job['height']}p: {e!r}"
+
+    def snapshot(self) -> dict:
+        with self.guard:
+            cur = dict(self.current) if self.current else None
+            if cur and cur["frame"]:
+                elapsed = time.time() - cur["started"]
+                cur["eta_seconds"] = round(elapsed * (cur["frames"] - cur["frame"]) / cur["frame"])
+            return {"current": cur, "queue": list(self.queue), "error": self.error}
+
+
+JOBS = RenderJobs()
+_state_cache: dict = {"at": 0.0, "films": {}}
+
+
+def render_status() -> dict:
+    """Everything the Render tab shows: each film's current state, its rendered versions, and the job in progress."""
+    if time.time() - _state_cache["at"] > 2.5:       # resolving both films on every one-second poll would be wasteful
+        films = {}
+        with _lock:
+            process.run("all", quiet=True)
+            for name, prof in catalog.load_config("films.json")["films"].items():
+                _, fingerprint, summary = film_state(name)
+                versions = {}
+                for height, q in QUALITIES.items():
+                    f = draft_path(name, height)
+                    meta = json.loads(f.with_suffix(".json").read_text(encoding="utf-8")) if f.with_suffix(".json").exists() else {}
+                    versions[height] = {"label": q["label"], "exists": f.exists(), "stale": meta.get("fingerprint") != fingerprint,
+                                        "rendered_at": meta.get("rendered_at") or (f.stat().st_mtime if f.exists() else None),
+                                        "mb": round(f.stat().st_size / 1e6, 1) if f.exists() else None,
+                                        "url": f"/video/drafts/{f.name}?v={int(f.stat().st_mtime)}" if f.exists() else None}
+                finals = sorted((paths.RENDERS_DIR / "final").glob(f"{name}_*.mp4"), reverse=True)
+                films[name] = {"label": prof["label"], "summary": summary, "versions": versions,
+                               "finals": [{"name": x.name, "mb": round(x.stat().st_size / 1e6, 1), "url": f"/video/final/{x.name}"} for x in finals]}
+        _state_cache.update(at=time.time(), films=films)
+    return {"films": _state_cache["films"], **JOBS.snapshot()}
+
+
+def render_action(payload: dict) -> dict:
+    films = catalog.load_config("films.json")["films"]
+    action, film, height = payload.get("action"), payload.get("film"), str(payload.get("height"))
+    if action == "cancel":
+        JOBS.cancel()
+    elif film in films and height in QUALITIES:
+        if action == "start":
+            JOBS.start(film, height)
+        elif action == "final":
+            source = draft_path(film, height)
+            if not source.exists():
+                raise ValueError("nothing rendered yet at this quality")
+            target = paths.assert_not_in_source(paths.RENDERS_DIR / "final" / f"{film}_{time.strftime('%Y-%m-%d_%H%M%S')}_{height}p.mp4")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)            # a new dated file every time: finals are never overwritten
+    else:
+        raise ValueError("unknown film, quality or action")
+    _state_cache["at"] = 0.0
+    return render_status()
+
+
 def apply_titles(payload: dict) -> dict:
     """Replace the whole set of title cards (one edit, an undo, or a delete all arrive this way)."""
     films = list(catalog.load_config("films.json")["films"])
@@ -868,6 +1110,36 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, path, content_type: str) -> None:
+        """Serve a file with byte ranges, which video players need in order to seek."""
+        size = path.stat().st_size
+        start, end, status = 0, size - 1, 200
+        header = self.headers.get("Range", "")
+        if header.startswith("bytes="):
+            first, _, last = header[6:].partition("-")
+            start = int(first) if first else max(size - int(last), 0)
+            end = min(int(last), size - 1) if first and last else size - 1
+            status = 206
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = end - start + 1
+                while remaining > 0:
+                    chunk = f.read(min(262144, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass        # the player moved on (seek or page change)
+
     def do_GET(self):
         route = self.path.split("?")[0]
         if route == "/":
@@ -881,6 +1153,13 @@ class Handler(BaseHTTPRequestHandler):
                                           "chapter_order": process.LAST_SELECTION.get("chapter_order", []),
                                           "custom_order": process.LAST_SELECTION.get("custom_order", False)}).encode("utf-8"),
                               "application/json")
+        if route == "/api/render":
+            return self._send(json.dumps(render_status()).encode("utf-8"), "application/json")
+        if route.startswith("/video/"):
+            base = paths.RENDERS_DIR.resolve()
+            target = (base / urllib.parse.unquote(route[len("/video/"):])).resolve()
+            if base in target.parents and target.is_file() and target.suffix == ".mp4":
+                return self._send_file(target, "video/mp4")
         if route == "/api/titles":
             return self._send(json.dumps({"slots": titles.slots(process.LAST_SELECTION.get("chapter_order", [])),
                                           "cards": titles.load()}).encode("utf-8"), "application/json")
@@ -894,11 +1173,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(b"not found", "text/plain", 404)
 
     def do_POST(self):
-        if self.path not in ("/api/override", "/api/order", "/api/titles"):
+        if self.path not in ("/api/override", "/api/order", "/api/titles", "/api/render"):
             return self._send(b"not found", "text/plain", 404)
         try:
             payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             result = (apply_order(payload) if self.path == "/api/order" else apply_titles(payload) if self.path == "/api/titles"
+                      else render_action(payload) if self.path == "/api/render"
                       else apply_override(payload["id"], payload["patch"]))
         except Exception as e:
             return self._send(json.dumps({"error": repr(e)}).encode("utf-8"), "application/json", 400)
