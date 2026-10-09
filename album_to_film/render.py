@@ -76,6 +76,8 @@ class TitleLayer:
         background = None
         if shot["card"].get("background") == "photo":
             background = cv2.imdecode(np.fromfile(paths.ROOT / shot["background_path"], np.uint8), cv2.IMREAD_REDUCED_COLOR_2)
+        elif shot["card"].get("background") == "image":
+            background = titles.load_image(shot["card"])
         self.image = titles.draw_card(shot["card"], width, height, background)
 
     def frame(self, u: float) -> np.ndarray:

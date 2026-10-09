@@ -3,7 +3,9 @@
 Cards are editorial data in editorial/titles.json. The same drawing code serves the renderer and the
 preview in the review page, so the preview is exactly what the film will show.
 """
+import hashlib
 import json
+import re
 import unicodedata
 
 import cv2
@@ -13,6 +15,9 @@ from PIL import Image, ImageDraw, ImageFont
 from . import catalog, paths
 
 TITLES_FILE = paths.EDITORIAL_DIR / "titles.json"
+IMAGES_DIR = paths.EDITORIAL_DIR / "title_images"      # pictures chosen as card backgrounds
+IMAGE_NAME = re.compile(r"[0-9a-f]{16}\.jpg")
+IMAGE_MAX_SIDE = 2560
 
 
 def load() -> dict:
@@ -21,6 +26,38 @@ def load() -> dict:
 
 def save(cards: dict) -> None:
     catalog.write_text_atomic(TITLES_FILE, json.dumps(cards, indent=1, ensure_ascii=False))
+
+
+def store_image(data: bytes) -> str:
+    """Keep a picture chosen for a card background and return its name.
+
+    The name comes from the content, so choosing the same picture twice stores it once, and a picture
+    is never replaced: undo can always go back to a card that used an earlier one.
+    """
+    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("this file is not a picture the site can read (use JPEG, PNG or WebP)")
+    scale = IMAGE_MAX_SIDE / max(image.shape[:2])
+    if scale < 1:
+        image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    name = hashlib.sha256(data).hexdigest()[:16] + ".jpg"
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    target = paths.assert_not_in_source(IMAGES_DIR / name)
+    if not target.exists():
+        target.write_bytes(cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 92])[1].tobytes())
+    return name
+
+
+def load_image(card: dict) -> np.ndarray | None:
+    """The picture a card uses as its background, if it has one."""
+    name = card.get("image") or ""
+    if card.get("background") != "image" or not IMAGE_NAME.fullmatch(name) or not (IMAGES_DIR / name).exists():
+        return None
+    return cv2.imdecode(np.fromfile(IMAGES_DIR / name, np.uint8), cv2.IMREAD_COLOR)
+
+
+def default_darkness() -> float:
+    return round(1 - catalog.load_config("films.json")["titles"]["photo_background_brightness"], 2)
 
 
 def slots(chapter_order: list[str]) -> list[dict]:
@@ -32,11 +69,16 @@ def slots(chapter_order: list[str]) -> list[dict]:
 
 def clean(card: dict, film_names: list[str]) -> dict:
     """Validated copy of a card coming from the review page."""
+    image = card.get("image") if IMAGE_NAME.fullmatch(str(card.get("image") or "")) else None
+    background = card.get("background") if card.get("background") in ("black", "photo", "image") else "black"
+    darkness = default_darkness() if card.get("darkness") in (None, "") else float(card["darkness"])
     return {
         "text": str(card.get("text", "")).strip()[:120],
         "subtext": str(card.get("subtext", "")).strip()[:160],
         "seconds": float(min(max(float(card.get("seconds") or 3.0), 1.0), 12.0)),
-        "background": card.get("background") if card.get("background") in ("black", "photo") else "black",
+        "background": background if image or background != "image" else "black",
+        "image": image,
+        "darkness": round(min(max(darkness, 0.0), 0.95), 2),     # how far a picture behind the text is darkened
         "films": [f for f in card.get("films", film_names) if f in film_names],
     }
 
@@ -90,15 +132,18 @@ def _fitted(draw: ImageDraw.ImageDraw, text: str, size: int, max_width: int, bol
 
 
 def draw_card(card: dict, width: int, height: int, background: np.ndarray | None = None) -> np.ndarray:
-    """One card as a BGR frame. `background` is a photograph (BGR) for the blurred-photo style."""
+    """One card as a BGR frame. `background` is a picture (BGR): blurred for the "photo" style, sharp for "image"."""
     cfg = catalog.load_config("films.json")["titles"]
-    if card.get("background") == "photo" and background is not None:
+    if card.get("background") in ("photo", "image") and background is not None:
         h, w = background.shape[:2]
         fill = max(width / w, height / h)
         bg = cv2.resize(background, None, fx=fill, fy=fill, interpolation=cv2.INTER_AREA)
         y, x = (bg.shape[0] - height) // 2, (bg.shape[1] - width) // 2
-        bg = cv2.GaussianBlur(bg[y:y + height, x:x + width], (0, 0), width / 30)
-        base = (bg.astype(np.float32) * cfg["photo_background_brightness"]).astype(np.uint8)
+        bg = bg[y:y + height, x:x + width]
+        if card["background"] == "photo":
+            bg = cv2.GaussianBlur(bg, (0, 0), width / 30)
+        darkness = card["darkness"] if card.get("darkness") is not None else default_darkness()
+        base = (bg.astype(np.float32) * (1 - darkness)).astype(np.uint8)
     else:
         base = np.zeros((height, width, 3), np.uint8)
     image = Image.fromarray(cv2.cvtColor(base, cv2.COLOR_BGR2RGB))

@@ -68,7 +68,7 @@ reports, review decisions, music and video cannot be committed by accident, what
 | `timeline` | Resolves each film into exact cut points, transitions and camera moves. Shot lengths come from editorial constraints (preferred, min, max, weight); a tempo map only snaps cuts to nearby beats within those limits | done |
 | `render` | Ken Burns motion, crossfades and chapter dips, drawn frame by frame with sub-pixel precision and encoded with FFmpeg together with the song | done |
 | `music` | Analyses a song (length, tempo, beats) with plain NumPy. A film can pin a photograph to a moment of the song, either by starting the song later or by fitting shot lengths; cuts then snap to beats | done |
-| titles | Title cards at fixed places (opening, start of a chapter, closing), edited in the review page with a live preview; right-to-left text supported | done |
+| titles | Title cards at fixed places (opening, start of a chapter, closing), edited in the review page with a live preview; black, a blurred photograph from the film, or your own picture behind the text, darkened as much as you choose; right-to-left text supported | done |
 
 ### Finding the print
 

@@ -6,7 +6,9 @@ reprocessed at once.
 """
 import hashlib
 import json
+import pathlib
 import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -96,6 +98,8 @@ PAGE = r"""<!doctype html>
   #titledlg input[type=text], #titledlg input[type=number], #titledlg select { width:100%; color:var(--ink); }
   #titledlg .row { display:flex; flex-wrap:wrap; gap:14px; align-items:end; }
   #titledlg .row label { flex:1 1 140px; } #titledlg .row label.check { flex:0 0 auto; display:flex; align-items:center; gap:6px; color:var(--ink); }
+  #titledlg [hidden] { display:none; } #titledlg input[type=range] { width:100%; }
+  #t-picrow { align-items:center; } #t-picname { color:var(--dim); }
   #titlepreview { width:100%; aspect-ratio:16 / 9; background:#000; border-radius:6px; display:block; }
   .rgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:18px; align-items:start; }
   .rcard { background:var(--card); border-radius:8px; padding:16px; display:grid; gap:12px; }
@@ -104,7 +108,8 @@ PAGE = r"""<!doctype html>
   .rcard .empty { aspect-ratio:16 / 9; display:flex; align-items:center; justify-content:center; background:#111; border-radius:6px; color:var(--dim); }
   .rsummary { color:var(--ink); font-variant-numeric:tabular-nums; } .rsummary .flag { display:block; }
   .ractions, .rversions, .rfinals { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-  .rversions button.on { background:var(--accent); color:#111; font-weight:600; border-color:var(--accent); }
+  .rfinal { display:inline-flex; gap:2px; }
+  .rversions button.on, .rfinal button.on { background:var(--accent); color:#111; font-weight:600; border-color:var(--accent); }
   .rprogress { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
   .rprogress progress { flex:1 1 180px; height:14px; accent-color:var(--accent); }
   .rnote { color:var(--dim); font-size:13px; }
@@ -215,8 +220,15 @@ or use its ◀ ▶ buttons; the order is one story order shared by both films.
     <label>Second line (optional) <input type="text" id="t-sub" dir="auto" maxlength="160"></label>
     <div class="row">
       <label>Seconds on screen <input type="number" id="t-seconds" min="1" max="12" step="0.5"></label>
-      <label>Background <select id="t-bg"><option value="black">Black</option><option value="photo">Blurred photograph</option></select></label>
+      <label>Background <select id="t-bg"><option value="black">Black</option><option value="photo">Blurred photograph</option><option value="image">Your own picture</option></select></label>
     </div>
+    <div class="row" id="t-picrow">
+      <button id="t-pick">Choose picture…</button>
+      <span id="t-picname"></span>
+      <input type="file" id="t-file" accept="image/jpeg,image/png,image/webp" hidden>
+    </div>
+    <label id="t-darkrow">Darken the picture <output id="t-darkval"></output>
+      <input type="range" id="t-dark" min="0" max="95" step="1"></label>
     <div class="row" id="t-films"></div>
     <div class="row">
       <button class="primary" id="t-apply">Apply</button>
@@ -455,7 +467,8 @@ function drawRender() {
     player.dataset.url = url || '';
     card.querySelector('.rfinals').innerHTML =
       (cur ? `<button data-act="render-final" data-film="${k}" data-height="${shown}" title="Copies this version to renders/final with today's date; finals are never overwritten">Save as final</button>` : '') +
-      f.finals.map(x => `<button class="${shown === x.url ? 'on' : ''}" data-act="render-play" data-film="${k}" data-url="${x.url}">▶ ${esc(x.name)} (${x.mb} MB)</button>`).join('');
+      f.finals.map(x => `<span class="rfinal"><button class="${shown === x.url ? 'on' : ''}" data-act="render-play" data-film="${k}" data-url="${x.url}" title="Watch this final here" aria-label="Watch ${esc(x.name)}">▶</button>` +
+        `<button data-act="render-reveal" data-name="${esc(x.name)}" title="Show this file in its folder">${esc(x.name)} (${x.mb} MB)</button></span>`).join('');
   }
   if (renderState.error) setStatus('error', `Render failed: ${renderState.error}`);
 }
@@ -722,14 +735,39 @@ async function sendTitles(cards, record = true) {
     refreshButtons();
   }
 }
-let titleSlot = null, previewTimer = null;
+let titleSlot = null, previewTimer = null, titleImage = null;
 const titleForm = () => ({
   text: document.getElementById('t-text').value, subtext: document.getElementById('t-sub').value,
   seconds: +document.getElementById('t-seconds').value || 3, background: document.getElementById('t-bg').value,
+  image: titleImage, darkness: +document.getElementById('t-dark').value / 100,
   films: [...document.querySelectorAll('#t-films input:checked')].map(i => i.value),
 });
+// The darkening slider appears only for the backgrounds that have a picture to darken.
+function showTitleOptions() {
+  const bg = document.getElementById('t-bg').value, dark = document.getElementById('t-dark').value;
+  document.getElementById('t-darkrow').hidden = bg === 'black';
+  document.getElementById('t-darkval').textContent = dark + '%';
+  document.getElementById('t-picname').textContent = titleImage ? 'Picture chosen' : 'No picture chosen yet';
+  document.getElementById('t-pick').textContent = titleImage ? 'Choose another picture…' : 'Choose picture…';
+}
+async function uploadTitleImage(file) {
+  const name = document.getElementById('t-picname');
+  name.textContent = 'Uploading…';
+  try {
+    const res = await fetch('/api/title_image', {method: 'POST', body: file});
+    const out = await res.json();
+    if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
+    titleImage = out.image;
+    document.getElementById('t-bg').value = 'image';      // choosing a picture also switches the card to it
+    showTitleOptions();
+    updateTitlePreview();
+  } catch (err) {
+    name.textContent = `Could not use this picture: ${err.message}`;
+  }
+}
 function updateTitlePreview() {
   const f = titleForm(), q = new URLSearchParams({text: f.text, subtext: f.subtext, background: f.background,
+    image: f.image || '', darkness: f.darkness,
     film: document.getElementById('film').value, slot: titleSlot});
   document.getElementById('titlepreview').src = '/api/title_preview?' + q;
 }
@@ -742,6 +780,9 @@ function openTitleEditor(slot) {
   document.getElementById('t-sub').value = card.subtext;
   document.getElementById('t-seconds').value = card.seconds;
   document.getElementById('t-bg').value = card.background;
+  titleImage = card.image || null;
+  document.getElementById('t-dark').value = Math.round((card.darkness ?? titleData.default_darkness) * 100);
+  showTitleOptions();
   document.getElementById('t-films').innerHTML = Object.entries(films.films).map(([k, f]) =>
     `<label class="check"><input type="checkbox" value="${k}" ${card.films.includes(k) ? 'checked' : ''}> ${esc(f.label)}</label>`).join('');
   document.getElementById('titledlg').hidden = false;
@@ -752,10 +793,20 @@ function closeTitleEditor() { titleSlot = null; document.getElementById('titledl
 function applyTitle() {
   const card = titleForm(), slot = titleSlot;
   if (!card.text.trim()) { document.getElementById('t-text').focus(); return; }
+  if (card.background === 'image' && !card.image) { document.getElementById('t-pick').focus(); return; }
   closeTitleEditor();
   sendTitles({...titleData.cards, [slot]: card});
 }
-document.getElementById('titledlg').addEventListener('input', () => { clearTimeout(previewTimer); previewTimer = setTimeout(updateTitlePreview, 250); });
+document.getElementById('titledlg').addEventListener('input', ev => {
+  if (ev.target.id === 't-file') return;                // a chosen file is uploaded first; the preview follows
+  showTitleOptions();
+  clearTimeout(previewTimer); previewTimer = setTimeout(updateTitlePreview, 250);
+});
+document.getElementById('t-pick').addEventListener('click', () => document.getElementById('t-file').click());
+document.getElementById('t-file').addEventListener('change', ev => {
+  if (ev.target.files[0]) uploadTitleImage(ev.target.files[0]);
+  ev.target.value = '';                                 // so the same file can be chosen again
+});
 document.getElementById('t-apply').addEventListener('click', applyTitle);
 document.getElementById('t-cancel').addEventListener('click', closeTitleEditor);
 document.getElementById('titledlg').addEventListener('click', ev => { if (ev.target.id === 'titledlg') closeTitleEditor(); });
@@ -875,6 +926,7 @@ document.addEventListener('click', ev => {
   if (b.dataset.act === 'render-final') return renderPost({action: 'final', film: b.dataset.film, height: b.dataset.height})
     .then(() => setStatus('saved', 'Saved a dated copy to renders/final'));
   if (b.dataset.act === 'render-show') { shownVersion[b.dataset.film] = b.dataset.height; return drawRender(); }
+  if (b.dataset.act === 'render-reveal') return renderPost({action: 'reveal', name: b.dataset.name});
   if (b.dataset.act === 'render-play') { shownVersion[b.dataset.film] = b.dataset.url; return drawRender(); }
   if (b.dataset.act === 'title-edit') return openTitleEditor(b.dataset.slot);
   if (b.dataset.act === 'title-delete') {
@@ -1063,6 +1115,11 @@ def render_action(payload: dict) -> dict:
     action, film, height = payload.get("action"), payload.get("film"), str(payload.get("height"))
     if action == "cancel":
         JOBS.cancel()
+    elif action == "reveal":                        # show a saved final in Finder; only a file that is really in renders/final
+        target = paths.RENDERS_DIR / "final" / pathlib.PurePath(str(payload.get("name"))).name
+        if target.suffix != ".mp4" or not target.is_file():
+            raise ValueError("no such final")
+        subprocess.run(["open", "-R", str(target)], check=True)
     elif film in films and height in QUALITIES:
         if action == "start":
             JOBS.start(film, height)
@@ -1079,6 +1136,9 @@ def render_action(payload: dict) -> dict:
     return render_status()
 
 
+TITLE_IMAGE_MAX_BYTES = 60 * 1024 * 1024
+
+
 def apply_titles(payload: dict) -> dict:
     """Replace the whole set of title cards (one edit, an undo, or a delete all arrive this way)."""
     films = list(catalog.load_config("films.json")["films"])
@@ -1092,8 +1152,8 @@ def apply_titles(payload: dict) -> dict:
 def title_preview(query: dict) -> bytes:
     """A card drawn by the same code the renderer uses, as a JPEG."""
     films = list(catalog.load_config("films.json")["films"])
-    card = titles.clean({k: query.get(k, [""])[0] for k in ("text", "subtext", "seconds", "background")}, films)
-    background = None
+    card = titles.clean({k: query.get(k, [""])[0] for k in ("text", "subtext", "seconds", "background", "image", "darkness")}, films)
+    background = titles.load_image(card)
     order = process.LAST_SELECTION.get("films", {}).get(query.get("film", [""])[0], {}).get("order", [])
     if card["background"] == "photo" and order:
         results = {r["id"]: r for r in json.loads((paths.REPORTS_DIR / "restore_results.json").read_text(encoding="utf-8"))}
@@ -1165,7 +1225,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_file(target, "video/mp4")
         if route == "/api/titles":
             return self._send(json.dumps({"slots": titles.slots(process.LAST_SELECTION.get("chapter_order", [])),
-                                          "cards": titles.load()}).encode("utf-8"), "application/json")
+                                          "cards": titles.load(), "default_darkness": titles.default_darkness()}).encode("utf-8"),
+                              "application/json")
         if route == "/api/title_preview":
             return self._send(title_preview(urllib.parse.parse_qs(self.path.partition("?")[2])), "image/jpeg")
         if route.startswith("/previews/"):
@@ -1176,6 +1237,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(b"not found", "text/plain", 404)
 
     def do_POST(self):
+        if self.path == "/api/title_image":                # the body is the picture file itself
+            try:
+                size = int(self.headers.get("Content-Length", 0))
+                if not 0 < size <= TITLE_IMAGE_MAX_BYTES:
+                    raise ValueError("the picture is empty or larger than 60 MB")
+                result = {"image": titles.store_image(self.rfile.read(size))}
+            except Exception as e:
+                return self._send(json.dumps({"error": str(e)}).encode("utf-8"), "application/json", 400)
+            return self._send(json.dumps(result).encode("utf-8"), "application/json")
         if self.path not in ("/api/override", "/api/order", "/api/titles", "/api/render"):
             return self._send(b"not found", "text/plain", 404)
         try:
