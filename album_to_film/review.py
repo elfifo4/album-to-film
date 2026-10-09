@@ -230,6 +230,10 @@ or use its ◀ ▶ buttons; the order is one story order shared by both films.
     <label id="t-darkrow">Darken the picture <output id="t-darkval"></output>
       <input type="range" id="t-dark" min="0" max="95" step="1"></label>
     <div class="row" id="t-films"></div>
+    <div class="row" id="t-faderow">
+      <label class="check" title="Without the fade the film opens directly on this card, so its thumbnail is the card and not a black frame">
+        <input type="checkbox" id="t-fade"> Fade in from black at the start of the film</label>
+    </div>
     <div class="row">
       <button class="primary" id="t-apply">Apply</button>
       <button id="t-cancel">Cancel</button>
@@ -741,6 +745,7 @@ const titleForm = () => ({
   seconds: +document.getElementById('t-seconds').value || 3, background: document.getElementById('t-bg').value,
   image: titleImage, darkness: +document.getElementById('t-dark').value / 100,
   films: [...document.querySelectorAll('#t-films input:checked')].map(i => i.value),
+  fade_in: document.getElementById('t-fade').checked,
 });
 // The darkening slider appears only for the backgrounds that have a picture to darken.
 function showTitleOptions() {
@@ -782,6 +787,8 @@ function openTitleEditor(slot) {
   document.getElementById('t-bg').value = card.background;
   titleImage = card.image || null;
   document.getElementById('t-dark').value = Math.round((card.darkness ?? titleData.default_darkness) * 100);
+  document.getElementById('t-fade').checked = card.fade_in !== false;
+  document.getElementById('t-faderow').hidden = slot !== 'opening';      // only the film's first card can open it
   showTitleOptions();
   document.getElementById('t-films').innerHTML = Object.entries(films.films).map(([k, f]) =>
     `<label class="check"><input type="checkbox" value="${k}" ${card.films.includes(k) ? 'checked' : ''}> ${esc(f.label)}</label>`).join('');

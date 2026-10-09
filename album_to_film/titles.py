@@ -79,6 +79,7 @@ def clean(card: dict, film_names: list[str]) -> dict:
         "background": background if image or background != "image" else "black",
         "image": image,
         "darkness": round(min(max(darkness, 0.0), 0.95), 2),     # how far a picture behind the text is darkened
+        "fade_in": card.get("fade_in") is not False,             # opening card only: the film fades in from black
         "films": [f for f in card.get("films", film_names) if f in film_names],
     }
 

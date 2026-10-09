@@ -259,7 +259,9 @@ def solve(film: str, photo_ids: list[str] | None = None, target_seconds: float |
     for k, pid in enumerate(ids):
         r = None if is_title(pid) else results[pid]
         if k == 0:
-            t_in = {"type": "fade_from_black", "seconds": prof["fade_in_seconds"]}
+            # an opening card can turn the fade off, so the film's first frame (its thumbnail) is the card itself
+            fade_in = r is not None or card_of(pid).get("fade_in", True)
+            t_in = {"type": "fade_from_black", "seconds": prof["fade_in_seconds"] if fade_in else 0.0}
         elif chapter_start[k]:
             t_in = {"type": tr["chapter"], "seconds": tr["chapter_seconds"]}
         else:
